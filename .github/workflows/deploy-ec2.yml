@@ -20,20 +20,9 @@ jobs:
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Validate package
-        run: |
-          node --version
-          npm --version
-          test -f package.json
-
       - name: Create deploy bundle
         run: |
-          tar             --exclude='.git'             --exclude='.github'             --exclude='node_modules'             -czf quilicura-deploy.tgz             package.json index.html src scripts tests
+          tar             --exclude='.git'             --exclude='.github'             --exclude='node_modules'             -czf quilicura-deploy.tgz             package.json             index.html             Dockerfile             docker-compose.yml             .dockerignore             src             config             data
 
       - name: Copy bundle to EC2
         uses: appleboy/scp-action@v0.1.7
@@ -45,7 +34,7 @@ jobs:
           source: "quilicura-deploy.tgz"
           target: "/tmp"
 
-      - name: Deploy on EC2
+      - name: Deploy on EC2 with Docker
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -54,8 +43,45 @@ jobs:
           port: ${{ secrets.EC2_PORT }}
           script: |
             set -euo pipefail
-            mkdir -p "${{ secrets.EC2_DEPLOY_PATH }}"
-            tar -xzf /tmp/quilicura-deploy.tgz -C "${{ secrets.EC2_DEPLOY_PATH }}"
-            cd "${{ secrets.EC2_DEPLOY_PATH }}"
-            npm install
-            bash -lc "${{ secrets.EC2_POST_DEPLOY_CMD }}"
+
+            APP_ROOT=/opt/quilicura
+            CURRENT_DIR="$APP_ROOT/current"
+            RELEASE_DIR="$APP_ROOT/release"
+            ARCHIVE=/tmp/quilicura-deploy.tgz
+
+            if ! command -v docker >/dev/null 2>&1; then
+              curl -fsSL https://get.docker.com | sudo sh
+            fi
+
+            sudo systemctl enable docker || true
+            sudo systemctl start docker
+
+            if ! docker compose version >/dev/null 2>&1; then
+              sudo mkdir -p /usr/local/lib/docker/cli-plugins
+              sudo curl -SL https://github.com/docker/compose/releases/download/v2.39.2/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose
+              sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+            fi
+
+            sudo mkdir -p "$APP_ROOT"
+            sudo chown -R "$USER":"$USER" "$APP_ROOT"
+
+            if [ -d "$CURRENT_DIR" ]; then
+              cd "$CURRENT_DIR"
+              docker compose down --remove-orphans || true
+            fi
+
+            rm -rf "$RELEASE_DIR"
+            mkdir -p "$RELEASE_DIR"
+            tar -xzf "$ARCHIVE" -C "$RELEASE_DIR"
+
+            rm -rf "$CURRENT_DIR"
+            mv "$RELEASE_DIR" "$CURRENT_DIR"
+            cd "$CURRENT_DIR"
+
+            docker container prune -f || true
+            docker image prune -af || true
+            docker builder prune -af || true
+
+            docker compose up -d --build
+            sleep 10
+            docker compose ps
