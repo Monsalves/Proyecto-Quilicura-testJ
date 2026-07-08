@@ -1009,7 +1009,7 @@ export async function startServer(options = {}) {
   const server = createServer(options);
   await new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(options.port || 4310, '127.0.0.1', resolve);
+    server.listen(options.port || 4310, process.env.HOST || '0.0.0.0', resolve);
   });
   return server;
 }
