@@ -1,0 +1,61 @@
+name: Deploy Quilicura to EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to deploy
+        required: false
+        default: main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Validate package
+        run: |
+          node --version
+          npm --version
+          test -f package.json
+
+      - name: Create deploy bundle
+        run: |
+          tar             --exclude='.git'             --exclude='.github'             --exclude='node_modules'             -czf quilicura-deploy.tgz             package.json index.html src scripts tests
+
+      - name: Copy bundle to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_PORT }}
+          source: "quilicura-deploy.tgz"
+          target: "/tmp"
+
+      - name: Deploy on EC2
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_PORT }}
+          script: |
+            set -euo pipefail
+            mkdir -p "${{ secrets.EC2_DEPLOY_PATH }}"
+            tar -xzf /tmp/quilicura-deploy.tgz -C "${{ secrets.EC2_DEPLOY_PATH }}"
+            cd "${{ secrets.EC2_DEPLOY_PATH }}"
+            npm install
+            bash -lc "${{ secrets.EC2_POST_DEPLOY_CMD }}"
