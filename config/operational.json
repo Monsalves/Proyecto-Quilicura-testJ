@@ -1,0 +1,165 @@
+{
+  "version": "v0039",
+  "phase": "v0039 - Persistencia SQLite operativa",
+  "target": "local_product_ready_increment",
+  "sidra_mode": "simulated",
+  "real_sidra_enabled": false,
+  "production_data_enabled": false,
+  "external_writes_enabled": false,
+  "deploy_enabled": false,
+  "pr_creation_enabled": false,
+  "runtime": {
+    "backend_port": 4310,
+    "frontend_port": 4173,
+    "integrated_port": 4300
+  },
+  "storage": {
+    "engine": "sqlite",
+    "path": "data/quilicura.sqlite",
+    "seed": "data/seed-v0031.json",
+    "local_storage_role": "ui_preferences_only",
+    "session_storage_role": "ephemeral_browser_session_token"
+  },
+  "auth": {
+    "password_hash": "scrypt",
+    "session_ttl_seconds": 2700,
+    "protected_routes": [
+      "/api/bootstrap",
+      "/api/auth/session",
+      "/api/auth/logout",
+      "/api/demo/reset",
+      "/api/patients",
+      "/api/audit",
+      "/api/v1/pacientes",
+      "/api/v1/profesionales",
+      "/api/v1/prestaciones",
+      "/api/v1/agendas",
+      "/api/v1/cupos",
+      "/api/v1/citas",
+      "/api/v1/lista-espera",
+      "/api/v1/contactabilidad",
+      "/api/v1/campanas",
+      "/api/v1/encuestas",
+      "/api/v1/sidra",
+      "/api/v1/reportes",
+      "/api/v1/continuidad"
+    ]
+  },
+  "rbac": {
+    "scope_mode": "establishment_bound",
+    "roles": [
+      "administrador_comunal",
+      "gestor_cesfam",
+      "profesional",
+      "auditor"
+    ],
+    "permission_error": "permission_denied"
+  },
+  "agenda_rules": {
+    "policy_mode": "simulated_local_versioned_rl03_rl04",
+    "reschedule_cutoff_hours": 24,
+    "cancel_release_cutoff_hours": 24,
+    "double_booking": "blocked_in_backend",
+    "auto_waitlist_assignment": false
+  },
+  "waitlist": {
+    "policy_mode": "simulated_local_versioned_rl01",
+    "priority_rule_id": "RL-01",
+    "priority_rule": "riesgo_cronico_then_antiguedad_then_establecimiento",
+    "offer_ttl_minutes": 90,
+    "automatic_assignment": false,
+    "statuses": [
+      "activa",
+      "oferta_activa",
+      "resuelta",
+      "cerrada"
+    ]
+  },
+  "contactability": {
+    "policy_mode": "simulated_local_versioned_rl05",
+    "required_attempts_for_no_contact": 3,
+    "required_channels_for_no_contact": 2,
+    "secure_channels": [
+      "telefono",
+      "portal",
+      "domicilio"
+    ],
+    "insecure_channels_for_sensitive": [
+      "sms",
+      "correo",
+      "whatsapp"
+    ]
+  },
+  "campaigns": {
+    "policy_mode": "simulated_local_versioned_rl07",
+    "segmentation_mode": "manual_only",
+    "approval_required": true,
+    "identifiable_export": false
+  },
+  "reports": {
+    "policy_mode": "simulated_local_versioned_r10",
+    "default_periodicity": "monthly",
+    "identifiable_export": false
+  },
+  "continuity": {
+    "backup_engine": "local_sqlite_snapshot",
+    "restore_requires_login_reload": true
+  },
+  "quality": {
+    "browser_e2e": "google_chrome_headless_cdp_with_deterministic_fallback",
+    "clean_start": true,
+    "visual_evidence": [
+      "evidence/visual/desktop-v0038-product.png",
+      "evidence/visual/mobile-v0038-product.png",
+      "evidence/visual/mobile-uiux-v0029.png"
+    ]
+  },
+  "patients": {
+    "statuses": [
+      "activo",
+      "fallecido",
+      "fusionado",
+      "inactivo",
+      "pendiente_validacion"
+    ],
+    "contact_types": [
+      "telefono",
+      "correo",
+      "domicilio",
+      "otro"
+    ],
+    "languages": [
+      "espanol",
+      "creole",
+      "otro"
+    ]
+  },
+  "appointments": {
+    "statuses": [
+      "agendada",
+      "confirmada",
+      "cancelada",
+      "reprogramada",
+      "reprogramacion_solicitada"
+    ],
+    "slot_statuses": [
+      "disponible",
+      "reservado",
+      "bloqueado"
+    ]
+  },
+  "sidra": {
+    "policy_mode": "simulated_local_service_r07",
+    "max_retries": 3,
+    "retry_delay_minutes": 15,
+    "statuses": [
+      "queued",
+      "sent",
+      "acknowledged",
+      "rejected",
+      "retry_pending",
+      "failed",
+      "discrepancy"
+    ]
+  }
+}
