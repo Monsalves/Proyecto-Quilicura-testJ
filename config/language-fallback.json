@@ -1,0 +1,1 @@
+{"version":"LANG-2026-LOCAL-SIM-001","default_language":"es","creole":"simulated_human_escalation","ai_sensitive_actions":"blocked","templates":[{"id":"tpl-es-confirmacion","language":"es","status":"active_simulated"},{"id":"tpl-ht-escalamiento","language":"ht","status":"escalate_human_simulated"}],"status":"pass"}
