@@ -82,6 +82,10 @@ try {
   assert(shell.ok, 'frontend shell must respond for waitlist ui test');
   const script = await fetch(`${appBase}/src/frontend/app.js`);
   assert(script.ok, 'frontend app script must be served for waitlist ui flow');
+  const scriptSource = await script.text();
+  assert(scriptSource.includes('data-open-modal="waitlist-offer"'), 'waitlist ui must expose modal action for create offer');
+  assert(scriptSource.includes('data-open-modal="waitlist-close"'), 'waitlist ui must expose modal action for close waitlist');
+  assert(scriptSource.includes('Registrar espera'), 'waitlist ui must expose register waitlist action near top');
 
   const token = await loginAs('gestor.cesfam', 'Quili.Gestor!2026');
 
