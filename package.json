@@ -1,6 +1,6 @@
 {
   "name": "quilicura-salud-web",
-  "version": "0.39.0",
+  "version": "0.51.0",
   "type": "module",
   "scripts": {
     "start": "node src/backend/server.mjs --serve-frontend --port 4300",
@@ -32,7 +32,11 @@
     "test:ui-reports": "node tests/ui-reports-e2e.mjs",
     "test:ui-browser": "node tests/ui-product-browser-e2e.mjs",
     "test:ui-uiux": "node tests/ui-uiux-v0029-e2e.mjs",
-    "test": "npm run test:db && npm run test:api && npm run test:api-campaigns && npm run test:api-sidra && npm run test:api-reports && npm run test:ui && npm run test:ui-rbac && npm run test:ui-patients && npm run test:ui-agenda && npm run test:ui-waitlist && npm run test:ui-contact && npm run test:ui-campaigns && npm run test:ui-sidra && npm run test:ui-reports && npm run test:seed && npm run test:clean-start && npm run test:hardening && npm run test:promotion",
+    "test:coverage:requirements": "node tests/requirements-coverage.mjs",
+    "test:core": "npm run test:db && npm run test:api && npm run test:api-campaigns && npm run test:api-sidra && npm run test:api-reports",
+    "test:ui:all": "node tests/run-ui-suite.mjs",
+    "test:ops": "npm run test:seed && npm run test:clean-start && npm run test:hardening && npm run test:promotion",
+    "test": "npm run test:core && npm run test:ui:all && npm run test:ops && npm run test:coverage:requirements",
     "healthcheck": "node tests/healthcheck.mjs",
     "version:promote": "node scripts/promote-version.mjs",
     "version:rollback": "node scripts/rollback-version.mjs",
