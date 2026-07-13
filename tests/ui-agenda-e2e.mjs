@@ -82,6 +82,9 @@ try {
   assert(shell.ok, 'frontend shell must respond for agenda ui test');
   const script = await fetch(`${appBase}/src/frontend/app.js`);
   assert(script.ok, 'frontend app script must be served for agenda ui flow');
+  const scriptSource = await script.text();
+  assert(scriptSource.includes('data-availability-filter="disponible"'), 'agenda ui must expose clickable availability filters');
+  assert(!scriptSource.includes("badge(can('agenda.write') ? 'agenda.write' : 'agenda.read')"), 'agenda ui must remove static agenda permission badge from header');
 
   const token = await loginAs('gestor.cesfam', 'Quili.Gestor!2026');
 
