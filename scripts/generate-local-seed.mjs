@@ -48,6 +48,30 @@ function pad(number, size = 4) {
   return String(number).padStart(size, '0');
 }
 
+function computeRutDv(number) {
+  const digits = String(number).replace(/\D/g, '');
+  let factor = 2;
+  let sum = 0;
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    sum += Number(digits[index]) * factor;
+    factor = factor === 7 ? 2 : factor + 1;
+  }
+  const remainder = 11 - (sum % 11);
+  if (remainder === 11) {
+    return '0';
+  }
+  if (remainder === 10) {
+    return 'K';
+  }
+  return String(remainder);
+}
+
+function formatRut(number) {
+  const digits = String(number).replace(/\D/g, '');
+  const body = digits.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return `${body}-${computeRutDv(digits)}`;
+}
+
 function isoDate(offsetDays, hour, minute = 0) {
   const base = Date.UTC(2030, 6, 1 + offsetDays, hour, minute, 0, 0);
   return new Date(base).toISOString();
@@ -59,13 +83,14 @@ function clone(value) {
 
 function createPatientGenerators() {
   return {
-    firstNames: ['Patricia', 'Marcela', 'Andrea', 'Valentina', 'Camila', 'Rosa', 'Evelyn', 'Yasna', 'Mauricio', 'Luis', 'Jorge', 'Daniela', 'Josefa', 'Karina', 'Mario', 'Rene'],
-    lastNames: ['Mella', 'Rojas', 'Herrera', 'Silva', 'Soto', 'Munoz', 'Araya', 'Lagos', 'Bravo', 'Pizarro', 'Leiva', 'Guzman', 'Saez', 'Morales', 'Caceres', 'Venegas'],
-    sectors: ['Lo Marcoleta', 'San Luis Norte', 'Villa Pucara', 'Valle Lo Campino', 'Parque Central', 'Santa Luisa', 'Villa Esperanza'],
-    risks: ['GES activo', 'cronico', 'cardiovascular', 'alto riesgo respiratorio', 'control sano', 'riesgo social', 'seguimiento post alta'],
+    firstNames: ['Patricia', 'Marcela', 'Andrea', 'Valentina', 'Camila', 'Rosa', 'Evelyn', 'Yasna', 'Mauricio', 'Luis', 'Jorge', 'Daniela', 'Josefa', 'Karina', 'Mario', 'Rene', 'Paula', 'Sebastian', 'Catalina', 'Ignacio', 'Fernanda', 'Cristobal', 'Monica', 'Esteban', 'Lorena', 'Natalia', 'Matias', 'Belen'],
+    lastNames: ['Mella', 'Rojas', 'Herrera', 'Silva', 'Soto', 'Munoz', 'Araya', 'Lagos', 'Bravo', 'Pizarro', 'Leiva', 'Guzman', 'Saez', 'Morales', 'Caceres', 'Venegas', 'Farias', 'Opazo', 'Carrasco', 'Navarrete', 'Contreras', 'Bustamante', 'Palma', 'Sepulveda', 'Vidal', 'Henriquez'],
+    sectors: ['Lo Marcoleta', 'San Luis Norte', 'Villa Pucara', 'Valle Lo Campino', 'Parque Central', 'Santa Luisa', 'Villa Esperanza', 'Altos de Quilicura', 'Los Presidentes', 'El Mañio'],
+    risks: ['GES activo', 'cronico compensado', 'riesgo cardiovascular moderado', 'seguimiento respiratorio estacional', 'control sano pendiente', 'riesgo social prioritario', 'seguimiento post alta hospitalaria', 'salud mental en seguimiento', 'polifarmacia', 'control infantil'],
     languages: ['espanol', 'espanol', 'espanol', 'creole', 'otro'],
     channels: ['telefono', 'telefono', 'sms', 'whatsapp', 'correo'],
-    representativeNames: ['Ana', 'Pedro', 'Carolina', 'Miguel', 'Ruth', 'Paola', 'Claudio', 'Miriam']
+    representativeNames: ['Ana', 'Pedro', 'Carolina', 'Miguel', 'Ruth', 'Paola', 'Claudio', 'Miriam', 'Soledad', 'Juan', 'Francisca', 'Ricardo'],
+    closureNotes: ['Control vigente en APS', 'Requiere seguimiento territorial', 'Prioridad definida por equipo clinico', 'Caso revisado en comite local', 'Seguimiento compartido con gestor comunal']
   };
 }
 
@@ -92,7 +117,8 @@ function createLargeDataset(base) {
     risks,
     languages,
     channels,
-    representativeNames
+    representativeNames,
+    closureNotes
   } = createPatientGenerators();
 
   const corePatients = clone(base.patients || []);
@@ -155,7 +181,7 @@ function createLargeDataset(base) {
     const patient = {
       id: patientId,
       identifier_kind: index % 7 === 0 ? 'transient' : 'definitive',
-      rut: index % 7 === 0 ? '' : `${10 + (index % 70)}.${pad(100 + index, 3)}.${pad(200 + index, 3)}-${index % 2 === 0 ? (index % 9) + 1 : 'K'}`,
+      rut: index % 7 === 0 ? '' : formatRut(12000000 + index * 137 + (index % 9) * 17),
       transient_reason: index % 7 === 0 ? 'Paciente en regularizacion documental local' : null,
       legal_name: legalName,
       social_name: `${firstName} ${lastName}`,
@@ -165,7 +191,7 @@ function createLargeDataset(base) {
       risk: pick(risks, index),
       contactable,
       establishment_id: establishmentId,
-      notes: `Paciente semilla v0031 #${index + 1} para operacion local simulada.`,
+      notes: `${pick(closureNotes, index)}. Referente comunitario asignado: ${pick(representativeNames, index + 2)}.`,
       created_at: createdAt,
       updated_at: createdAt,
       created_by: 'system',
@@ -182,7 +208,7 @@ function createLargeDataset(base) {
       value: phone,
       secure_channel: true,
       verified_at: createdAt,
-      notes: 'Semilla operativa local.',
+      notes: 'Contacto principal validado en admision local.',
       created_at: createdAt,
       updated_at: createdAt,
       created_by: 'system',
@@ -198,7 +224,7 @@ function createLargeDataset(base) {
         value: `paciente.${number}@quilicura.local`,
         secure_channel: false,
         verified_at: null,
-        notes: 'Canal complementario local.',
+        notes: 'Canal complementario declarado en ficha.',
         created_at: createdAt,
         updated_at: createdAt,
         created_by: 'system',
@@ -235,7 +261,7 @@ function createLargeDataset(base) {
         name: `${pick(representativeNames, index)} ${lastName}`,
         relationship: index % 2 === 0 ? 'hija' : 'pareja',
         phone,
-        notes: 'Apoderado local semilla.',
+        notes: 'Persona de apoyo registrada por admision.',
         created_at: createdAt,
         updated_at: createdAt,
         created_by: 'system',
@@ -533,9 +559,29 @@ async function writeDatabase(targetPath, value) {
   });
 }
 
+async function readRuntimeMetadata() {
+  try {
+    return JSON.parse(await readFile(resolve('config/operational.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
 const options = parseArgs(process.argv.slice(2));
 const base = JSON.parse(await readFile(resolve(options.input), 'utf8'));
 const dataset = createLargeDataset(base);
+const runtimeMetadata = await readRuntimeMetadata();
+
+if (runtimeMetadata?.version) {
+  dataset.version = runtimeMetadata.version;
+}
+if (runtimeMetadata?.phase) {
+  dataset.phase = runtimeMetadata.phase;
+}
+if (runtimeMetadata?.sidra_mode) {
+  dataset.sidra_mode = runtimeMetadata.sidra_mode;
+}
+dataset.production_data = false;
 
 await writeJson(options.seedOutput, dataset);
 await writeDatabase(options.dbOutput, { ...dataset, sessions: [] });
