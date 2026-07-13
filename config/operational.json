@@ -1,6 +1,6 @@
 {
-  "version": "v0039",
-  "phase": "v0039 - Persistencia SQLite operativa",
+  "version": "v0042",
+  "phase": "v0042 - Ajustes de usabilidad operativa y seed demo realista",
   "target": "local_product_ready_increment",
   "sidra_mode": "simulated",
   "real_sidra_enabled": false,
