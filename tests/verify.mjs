@@ -66,8 +66,8 @@ async function loginAs(username, password) {
   });
 }
 
-assert(runtime.version === 'v0039', 'runtime version must be v0039');
-assert(runtime.phase.includes('Persistencia SQLite operativa'), 'runtime phase must describe sqlite migration delivery');
+assert(runtime.version === 'v0042', 'runtime version must be v0042');
+assert(runtime.phase.includes('Ajustes de usabilidad operativa y seed demo realista'), 'runtime phase must describe the v0042 usability and dataset delivery');
 assert(Array.isArray(runtime.appointments?.statuses), 'runtime must expose appointment statuses');
 assert(runtime.waitlist?.priority_rule_id === 'RL-01', 'runtime must expose RL-01 waitlist rule');
 assert(runtime.contactability?.required_attempts_for_no_contact === 3, 'runtime must expose RL-05 attempts');
