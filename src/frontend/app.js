@@ -17,7 +17,11 @@ const rememberedUsernameKey = 'quilicura.lastUsername';
 const state = {
   view: 'dashboard',
   query: '',
+  sidebarHidden: false,
   agendaPanel: 'appointments',
+  campaignPanel: 'create',
+  agendaAvailabilityFilter: 'all',
+  patientEstablishmentFilter: '',
   sortBy: {
     agenda: 'time',
     patients: 'name',
@@ -25,6 +29,14 @@ const state = {
     contact: 'recent',
     sidra: 'status',
     audit: 'recent'
+  },
+  sortDir: {
+    agenda: 'asc',
+    patients: 'asc',
+    waitlist: 'asc',
+    contact: 'desc',
+    sidra: 'asc',
+    audit: 'desc'
   },
   loading: false,
   resetting: false,
@@ -41,7 +53,9 @@ const state = {
   activeDrawer: null,
   activeModal: null,
   drawerTab: 'summary',
-  e2eAttempted: false
+  e2eAttempted: false,
+  reportExportPreview: null,
+  templateBrowserTemplateId: null
 };
 
 const app = document.getElementById('app');
@@ -200,9 +214,10 @@ function compareDate(left, right) {
   return Date.parse(left || 0) - Date.parse(right || 0);
 }
 
-function sortRows(rows, mode, comparators) {
+function sortRows(rows, mode, comparators, direction = 'asc') {
   const comparator = comparators[mode] || comparators.default;
-  return [...rows].sort(comparator);
+  const sorted = [...rows].sort(comparator);
+  return direction === 'desc' ? sorted.reverse() : sorted;
 }
 
 function currentSearchPlaceholder() {
@@ -217,12 +232,24 @@ function currentSearchPlaceholder() {
 }
 
 function setViewSort(view, sortKey) {
+  if (state.sortBy[view] === sortKey) {
+    state.sortDir[view] = state.sortDir[view] === 'desc' ? 'asc' : 'desc';
+    return;
+  }
   state.sortBy[view] = sortKey;
+  state.sortDir[view] = 'asc';
+}
+
+function sortIndicator(view, sortKey) {
+  if (state.sortBy[view] !== sortKey) {
+    return '';
+  }
+  return state.sortDir[view] === 'desc' ? ' ↓' : ' ↑';
 }
 
 function sortHeader(view, sortKey, label) {
   const active = state.sortBy[view] === sortKey;
-  return `<button class="sort-header ${active ? 'active' : ''}" type="button" data-sort-view="${view}" data-sort-key="${sortKey}">${label}${active ? ' ↑' : ''}</button>`;
+  return `<button class="sort-header ${active ? 'active' : ''}" type="button" data-sort-view="${view}" data-sort-key="${sortKey}">${label}${sortIndicator(view, sortKey)}</button>`;
 }
 
 function activeSessionKey() {
@@ -293,8 +320,28 @@ function selectedContactCase() {
   return currentContactCases().find((item) => item.id === state.selectedContactCaseId) || null;
 }
 
+function selectedTemplateInBrowser() {
+  const templates = currentContactTemplates();
+  if (!templates.length) {
+    state.templateBrowserTemplateId = null;
+    return null;
+  }
+  if (!templates.some((item) => item.id === state.templateBrowserTemplateId)) {
+    state.templateBrowserTemplateId = templates[0].id;
+  }
+  return templates.find((item) => item.id === state.templateBrowserTemplateId) || null;
+}
+
 function setAgendaPanel(panel) {
   state.agendaPanel = panel === 'availability' ? 'availability' : 'appointments';
+}
+
+function setCampaignPanel(panel) {
+  state.campaignPanel = ['create', 'approve', 'schedule', 'export'].includes(panel) ? panel : 'create';
+}
+
+function setAgendaAvailabilityFilter(value) {
+  state.agendaAvailabilityFilter = ['disponible', 'reservado', 'bloqueado'].includes(value) ? value : 'all';
 }
 
 function setDrawerTab(tab) {
@@ -324,11 +371,48 @@ function closeDrawer() {
 }
 
 function openModal(kind, data = {}) {
+  if (kind === 'contact-template-browser') {
+    state.templateBrowserTemplateId = data.templateId || currentContactTemplates()[0]?.id || null;
+  }
   state.activeModal = { kind, ...data };
 }
 
 function closeModal() {
   state.activeModal = null;
+}
+
+function templateById(templateId) {
+  return currentContactTemplates().find((item) => item.id === templateId) || null;
+}
+
+function slotStatusRank(status) {
+  return {
+    reservado: 0,
+    disponible: 1,
+    bloqueado: 2
+  }[String(status || '').toLowerCase()] ?? 9;
+}
+
+function slotStatusLabel(status) {
+  return {
+    reservado: 'Reservado',
+    disponible: 'Disponible',
+    bloqueado: 'Bloqueado'
+  }[String(status || '').toLowerCase()] || status || 'Sin estado';
+}
+
+function appointmentActionSummary(appointment) {
+  const actions = [];
+  if (appointment.allowed_actions?.confirm) {
+    actions.push('Confirmable');
+  }
+  if (appointment.allowed_actions?.reprogram) {
+    actions.push('Reprogramable');
+  }
+  if (appointment.allowed_actions?.cancel) {
+    actions.push('Cancelable');
+  }
+  return actions.join(' · ') || 'Solo lectura';
 }
 
 async function request(path, options = {}, requiresAuth = true) {
@@ -553,7 +637,7 @@ async function rescheduleAppointment(appointmentId, data) {
 function filteredPatients() {
   const rows = currentPatients();
   const query = state.query.trim().toLowerCase();
-  const filtered = !query ? rows : rows.filter((item) => [
+  const filteredBySearch = !query ? rows : rows.filter((item) => [
     item.display_name,
     item.legal_name,
     item.rut,
@@ -561,20 +645,24 @@ function filteredPatients() {
     item.risk,
     item.establishment_name
   ].some((value) => String(value || '').toLowerCase().includes(query)));
+  const filtered = state.patientEstablishmentFilter
+    ? filteredBySearch.filter((item) => item.establishment_id === state.patientEstablishmentFilter)
+    : filteredBySearch;
   return sortRows(filtered, state.sortBy.patients, {
     default: (left, right) => compareText(left.display_name, right.display_name),
     name: (left, right) => compareText(left.display_name, right.display_name),
     id: (left, right) => compareText(left.id, right.id),
-    age: (left, right) => compareNumber(right.age, left.age),
-    risk: (left, right) => compareText(left.risk, right.risk)
-  });
+    age: (left, right) => compareNumber(left.age, right.age),
+    risk: (left, right) => compareText(left.risk, right.risk),
+    status: (left, right) => compareText(left.status, right.status) || compareText(left.display_name, right.display_name),
+    establishment: (left, right) => compareText(left.establishment_name, right.establishment_name) || compareText(left.display_name, right.display_name)
+  }, state.sortDir.patients);
 }
 
 function filteredAgendaSlots() {
-  const rows = currentAppointments();
   const query = state.query.trim().toLowerCase();
   const slots = state.bootstrap?.slots || [];
-  const filtered = !query ? slots : slots.filter((slot) => [
+  const filteredBySearch = !query ? slots : slots.filter((slot) => [
     slot.id,
     slot.service,
     slot.service_name,
@@ -584,13 +672,18 @@ function filteredAgendaSlots() {
     slot.day,
     slot.time
   ].some((value) => String(value || '').toLowerCase().includes(query)));
+  const filtered = state.agendaAvailabilityFilter === 'all'
+    ? filteredBySearch
+    : filteredBySearch.filter((slot) => String(slot.status || '').toLowerCase() === state.agendaAvailabilityFilter);
   return sortRows(filtered, state.sortBy.agenda, {
     default: (left, right) => compareDate(left.starts_at, right.starts_at) || compareText(left.id, right.id),
     time: (left, right) => compareDate(left.starts_at, right.starts_at) || compareText(left.id, right.id),
     id: (left, right) => compareText(left.id, right.id),
     patient: (left, right) => compareText(left.professional_name || left.professional, right.professional_name || right.professional),
-    status: (left, right) => compareText(left.status, right.status) || compareDate(left.starts_at, right.starts_at)
-  });
+    professional: (left, right) => compareText(left.professional_name || left.professional, right.professional_name || right.professional),
+    service: (left, right) => compareText(left.service_name || left.service, right.service_name || right.service),
+    status: (left, right) => compareNumber(slotStatusRank(left.status), slotStatusRank(right.status)) || compareDate(left.starts_at, right.starts_at)
+  }, state.sortDir.agenda);
 }
 
 function filteredAppointments() {
@@ -609,7 +702,7 @@ function filteredAppointments() {
     id: (left, right) => compareText(left.id, right.id),
     patient: (left, right) => compareText(left.patient_name, right.patient_name),
     status: (left, right) => compareText(left.status, right.status) || compareDate(left.starts_at, right.starts_at)
-  });
+  }, state.sortDir.agenda);
 }
 
 function sessionExpiresText() {
@@ -657,6 +750,40 @@ function checked(value) {
 
 function availableSlots() {
   return (state.bootstrap?.slots || []).filter((slot) => slot.status === 'disponible');
+}
+
+function sidraEntityOptions() {
+  return {
+    appointment: currentAppointments().map((item) => ({
+      id: item.id,
+      label: `${item.id} · ${item.patient_name || 'Paciente'}`
+    })),
+    waitlist: currentWaitlist().map((item) => ({
+      id: item.id,
+      label: `${item.id} · ${item.patient_name || 'Paciente'}`
+    })),
+    contact_case: currentContactCases().map((item) => ({
+      id: item.id,
+      label: `${item.id} · ${item.patient_name || 'Paciente'}`
+    })),
+    patient: currentPatients().map((item) => ({
+      id: item.id,
+      label: `${item.id} · ${item.display_name || item.legal_name || 'Paciente'}`
+    })),
+    manual_batch: [{ id: 'lote-manual-001', label: 'lote-manual-001 · Carga operativa' }]
+  };
+}
+
+function reportExportDownloadHref() {
+  if (!state.reportExportPreview) {
+    return '';
+  }
+  const payload = {
+    generated_at: new Date().toISOString(),
+    report: state.reportExportPreview.report || {},
+    export: state.reportExportPreview
+  };
+  return `data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(payload, null, 2))}`;
 }
 
 function detailTabs(items) {
@@ -710,6 +837,28 @@ function modalShell(title, content, attrs = '') {
   `;
 }
 
+function screenShell(title, tone, content, attrs = '', headerContent = '') {
+  return `
+    <div class="overlay-shell overlay-shell-centered" data-overlay-root>
+      <button class="overlay-backdrop" type="button" data-close-overlay aria-label="Cerrar ficha"></button>
+      <section class="screen-panel" ${attrs}>
+        <header class="drawer-head">
+          <div>
+            <p class="eyebrow">Ficha completa</p>
+            <h2>${title}</h2>
+          </div>
+          <div class="drawer-actions">
+            ${headerContent}
+            ${badge(tone)}
+            <button class="slot-action secondary" type="button" data-close-overlay>Cerrar</button>
+          </div>
+        </header>
+        <div class="drawer-body">${content}</div>
+      </section>
+    </div>
+  `;
+}
+
 function compactSummaryCards(items) {
   return `<div class="cards compact-cards">${items.map(([label, value, meta]) => `
     <article class="card metric compact-metric">
@@ -724,18 +873,33 @@ function appointmentDetailCard(appointment) {
   if (!appointment) {
     return '';
   }
-  const manageable = appointment.allowed_actions?.cancel || appointment.allowed_actions?.reprogram || appointment.allowed_actions?.confirm;
   const rescheduleOptions = availableSlots().filter((slot) => slot.id !== appointment.slotId && slot.establishment_id === appointment.establishment_id);
   return drawerShell('Gestion de cita', appointment.status, `
+    ${detailTabs([
+      ['summary', 'Resumen'],
+      ['confirm', 'Confirmar'],
+      ['reschedule', 'Reprogramar'],
+      ['cancel', 'Cancelar'],
+      ['history', 'Historial']
+    ])}
+    ${tabPanel('summary', `
       <section class="card detail-card">
-      <div class="section-head"><h3>Resumen</h3>${badge(appointment.status)}</div>
-      <ul class="plain-list">
-        <li>Paciente: <strong>${appointment.patient_name}</strong>.</li>
-        <li>Prestacion: ${appointment.service_name || 'Sin prestacion'}.</li>
-        <li>Profesional: ${appointment.professional_name || 'Sin profesional'}.</li>
-        <li>Cupo: ${appointment.slot_label}.</li>
-      </ul>
-      <div class="grid two">
+        <div class="section-head"><h3>Resumen</h3>${badge(appointment.status)}</div>
+        <ul class="plain-list">
+          <li>Paciente: <strong>${appointment.patient_name}</strong>.</li>
+          <li>Prestacion: ${appointment.service_name || 'Sin prestacion'}.</li>
+          <li>Profesional: ${appointment.professional_name || 'Sin profesional'}.</li>
+          <li>Cupo: ${appointment.slot_label}.</li>
+        </ul>
+        <div class="detail-highlight">
+          <strong>Estado operativo</strong>
+          <span>${appointmentActionSummary(appointment)}</span>
+        </div>
+      </section>
+    `)}
+    ${tabPanel('confirm', `
+      <section class="card detail-card">
+        <div class="section-head"><h3>Confirmar cita</h3>${badge(appointment.allowed_actions?.confirm ? 'accion_habilitada' : 'solo_lectura')}</div>
         <form id="confirm-appointment-form" class="form-grid">
           <label>Canal confirmacion
             <select name="channel" ${appointment.allowed_actions?.confirm ? '' : 'disabled'}>
@@ -746,31 +910,45 @@ function appointmentDetailCard(appointment) {
             <button type="submit" ${appointment.allowed_actions?.confirm ? '' : 'disabled'}>Confirmar cita</button>
           </div>
         </form>
+      </section>
+    `)}
+    ${tabPanel('reschedule', `
+      <section class="card detail-card">
+        <div class="section-head"><h3>Reprogramar cita</h3>${badge(appointment.allowed_actions?.reprogram ? 'accion_habilitada' : 'solo_lectura')}</div>
+        <form id="reschedule-appointment-form" class="form-grid">
+          <label>Nuevo cupo
+            <select name="new_slot_id" ${appointment.allowed_actions?.reprogram ? '' : 'disabled'}>
+              <option value="">Selecciona cupo</option>
+              ${rescheduleOptions.map((slot) => `<option value="${slot.id}">${slot.slot_label || `${slot.day} ${slot.time}`} · ${slot.service_name || slot.service}</option>`).join('')}
+            </select>
+          </label>
+          <label class="span-2">Causal reprogramacion<input name="reason" placeholder="Contingencia local" ${appointment.allowed_actions?.reprogram ? '' : 'disabled'}></label>
+          <div class="form-actions span-2">
+            <button type="submit" ${appointment.allowed_actions?.reprogram ? '' : 'disabled'}>Reprogramar cita</button>
+            <span class="inline-note">La trazabilidad queda registrada en el historial.</span>
+          </div>
+        </form>
+      </section>
+    `)}
+    ${tabPanel('cancel', `
+      <section class="card detail-card danger-zone">
+        <div class="section-head"><h3>Cancelar cita</h3>${badge(appointment.allowed_actions?.cancel ? 'revision_manual' : 'solo_lectura')}</div>
         <form id="cancel-appointment-form" class="form-grid">
           <label class="span-2">Causal cancelacion<input name="reason" placeholder="Solicitud del paciente" ${appointment.allowed_actions?.cancel ? '' : 'disabled'}></label>
           <div class="form-actions span-2">
-            <button type="submit" ${appointment.allowed_actions?.cancel ? '' : 'disabled'}>Cancelar cita</button>
+            <button class="slot-action danger" type="submit" ${appointment.allowed_actions?.cancel ? '' : 'disabled'}>Cancelar cita</button>
           </div>
         </form>
-      </div>
-      <form id="reschedule-appointment-form" class="form-grid">
-        <label>Nuevo cupo
-          <select name="new_slot_id" ${appointment.allowed_actions?.reprogram ? '' : 'disabled'}>
-            <option value="">Selecciona cupo</option>
-            ${rescheduleOptions.map((slot) => `<option value="${slot.id}">${slot.slot_label || `${slot.day} ${slot.time}`} · ${slot.service_name || slot.service}</option>`).join('')}
-          </select>
-        </label>
-        <label class="span-2">Causal reprogramacion<input name="reason" placeholder="Contingencia local" ${appointment.allowed_actions?.reprogram ? '' : 'disabled'}></label>
-        <div class="form-actions span-2">
-          <button type="submit" ${appointment.allowed_actions?.reprogram ? '' : 'disabled'}>Reprogramar cita</button>
-          <span class="inline-note">${manageable ? 'La reprogramacion y cancelacion quedan registradas en el historial.' : 'Solo lectura.'}</span>
+      </section>
+    `)}
+    ${tabPanel('history', `
+      <section class="card detail-card">
+        <div class="section-head"><h3>Historial</h3>${badge((appointment.history || []).length)}</div>
+        <div class="table-wrap">
+          <table><thead><tr><th>Fecha</th><th>Accion</th><th>Desde</th><th>Hacia</th><th>Detalle</th></tr></thead><tbody>${(appointment.history || []).map((item) => `<tr><td>${item.at}</td><td>${item.action}</td><td>${item.from_status || '-'}</td><td>${item.to_status || '-'}</td><td>${item.detail || ''}</td></tr>`).join('')}</tbody></table>
         </div>
-      </form>
-    </section>
-    <section class="card detail-card">
-      <div class="section-head"><h3>Historial</h3>${badge((appointment.history || []).length)}</div>
-      <table><thead><tr><th>Fecha</th><th>Accion</th><th>Desde</th><th>Hacia</th><th>Detalle</th></tr></thead><tbody>${(appointment.history || []).map((item) => `<tr><td>${item.at}</td><td>${item.action}</td><td>${item.from_status || '-'}</td><td>${item.to_status || '-'}</td><td>${item.detail || ''}</td></tr>`).join('')}</tbody></table>
-    </section>
+      </section>
+    `)}
   `, 'data-drawer-kind="appointment"');
 }
 
@@ -779,148 +957,205 @@ function patientDetailCard(patient) {
     return '';
   }
   const manage = can('patients.write') && patient.allowed_actions?.manage;
-  return drawerShell(`Ficha administrativa · ${patient.display_name}`, patient.status, `
-    ${detailTabs([
-      ['summary', 'Ficha'],
-      ['contacts', 'Contactos'],
-      ['network', 'Representantes'],
-      ['consents', 'Consentimientos']
-    ])}
+  const patientFacts = [
+    ['Estado', badge(patient.status)],
+    ['Edad', patientAgeLabel(patient)],
+    ['Establecimiento', patient.establishment_name || 'Sin establecimiento'],
+    ['Riesgo', patient.risk || 'Sin clasificar'],
+    ['Sector', patient.sector || 'Sin sector'],
+    ['Identificador', patient.rut || patient.id]
+  ];
+  return screenShell(`Ficha administrativa · ${patient.display_name}`, patient.status, `
     ${tabPanel('summary', `
-    <section class="card detail-card">
-      <div class="section-head"><h3>Ficha administrativa</h3>${badge(patient.status)}</div>
-      <form id="edit-patient-form" class="form-grid">
-        <input type="hidden" name="patient_id" value="${patient.id}">
-        <label>RUT<input name="rut" value="${patient.rut || ''}" ${manage ? '' : 'disabled'}></label>
-        <label>Tipo identificador
-          <select name="identifier_kind" ${manage ? '' : 'disabled'}>
-            <option value="definitive" ${selectedOption(patient.identifier_kind, 'definitive')}>Definitivo</option>
-            <option value="transient" ${selectedOption(patient.identifier_kind, 'transient')}>Transitorio</option>
-          </select>
-        </label>
-        <label>Nombre legal<input name="legal_name" value="${patient.legal_name || ''}" ${manage ? '' : 'disabled'}></label>
-        <label>Nombre social<input name="social_name" value="${patient.social_name || ''}" ${manage ? '' : 'disabled'}></label>
-        <label>Fecha nacimiento<input name="birth_date" type="date" value="${patient.birth_date || ''}" ${manage ? '' : 'disabled'}></label>
-        <label>Estado
-          <select name="status" ${manage ? '' : 'disabled'}>
-            ${['activo', 'pendiente_validacion', 'inactivo', 'fallecido', 'fusionado'].map((item) => `<option value="${item}" ${selectedOption(patient.status, item)}>${item}</option>`).join('')}
-          </select>
-        </label>
-        <label>Establecimiento
-          <select name="establishment_id" ${manage ? '' : 'disabled'}>
-            ${(state.bootstrap.establishments || []).map((item) => `<option value="${item.id}" ${selectedOption(patient.establishment_id, item.id)}>${item.name}</option>`).join('')}
-          </select>
-        </label>
-        <label>Sector<input name="sector" value="${patient.sector || ''}" ${manage ? '' : 'disabled'}></label>
-        <label>Riesgo<input name="risk" value="${patient.risk || ''}" ${manage ? '' : 'disabled'}></label>
-        <label class="span-2">Notas<textarea name="notes" ${manage ? '' : 'disabled'}>${patient.notes || ''}</textarea></label>
-        <label class="span-2">Motivo cierre logico<textarea name="closure_reason" ${manage ? '' : 'disabled'} placeholder="Obligatorio si cambias el estado fuera de activo"></textarea></label>
-        <div class="form-actions span-2">
-          <button type="submit" ${manage ? '' : 'disabled'}>Guardar ficha</button>
-          <span class="inline-note">${manage ? 'Los cambios quedan guardados de inmediato.' : 'Tu rol solo tiene lectura.'}</span>
+    <section class="card detail-card patient-panel patient-hero-card">
+      <div class="patient-hero">
+        <div>
+          <p class="eyebrow">Paciente</p>
+          <h3>${patient.display_name}</h3>
+          <p class="muted">${patient.legal_name || 'Sin nombre legal'} · ${patient.social_name || 'Sin nombre social'} · ${patient.birth_date || 'Sin fecha de nacimiento'}</p>
         </div>
-      </form>
+        <div class="info-pills">
+          ${badge(patient.status)}
+          <span>${patient.establishment_name || 'Sin establecimiento'}</span>
+          <span>${patient.risk || 'Sin riesgo'}</span>
+        </div>
+      </div>
+      <div class="patient-facts-grid">
+        ${patientFacts.map(([label, value]) => `
+          <article class="patient-fact-card">
+            <span>${label}</span>
+            <strong>${value}</strong>
+          </article>
+        `).join('')}
+      </div>
     </section>
+    <div class="patient-section-grid">
+      <section class="card detail-card patient-panel">
+        <div class="section-head"><h3>Ficha administrativa</h3>${badge(manage ? 'editable' : 'solo_lectura')}</div>
+        <form id="edit-patient-form" class="form-grid patient-form-grid">
+          <input type="hidden" name="patient_id" value="${patient.id}">
+          <label>RUT<input name="rut" value="${patient.rut || ''}" ${manage ? '' : 'disabled'}></label>
+          <label>Tipo identificador
+            <select name="identifier_kind" ${manage ? '' : 'disabled'}>
+              <option value="definitive" ${selectedOption(patient.identifier_kind, 'definitive')}>Definitivo</option>
+              <option value="transient" ${selectedOption(patient.identifier_kind, 'transient')}>Transitorio</option>
+            </select>
+          </label>
+          <label>Nombre legal<input name="legal_name" value="${patient.legal_name || ''}" ${manage ? '' : 'disabled'}></label>
+          <label>Nombre social<input name="social_name" value="${patient.social_name || ''}" ${manage ? '' : 'disabled'}></label>
+          <label>Fecha nacimiento<input name="birth_date" type="date" value="${patient.birth_date || ''}" ${manage ? '' : 'disabled'}></label>
+          <label>Estado
+            <select name="status" ${manage ? '' : 'disabled'}>
+              ${['activo', 'pendiente_validacion', 'inactivo', 'fallecido', 'fusionado'].map((item) => `<option value="${item}" ${selectedOption(patient.status, item)}>${item}</option>`).join('')}
+            </select>
+          </label>
+          <label>Establecimiento
+            <select name="establishment_id" ${manage ? '' : 'disabled'}>
+              ${(state.bootstrap.establishments || []).map((item) => `<option value="${item.id}" ${selectedOption(patient.establishment_id, item.id)}>${item.name}</option>`).join('')}
+            </select>
+          </label>
+          <label>Sector<input name="sector" value="${patient.sector || ''}" ${manage ? '' : 'disabled'}></label>
+          <label>Riesgo<input name="risk" value="${patient.risk || ''}" ${manage ? '' : 'disabled'}></label>
+          <label class="span-2">Notas<textarea name="notes" ${manage ? '' : 'disabled'}>${patient.notes || ''}</textarea></label>
+          <label class="span-2">Motivo cierre logico<textarea name="closure_reason" ${manage ? '' : 'disabled'} placeholder="Obligatorio si cambias el estado fuera de activo"></textarea></label>
+          <div class="form-actions span-2">
+            <button type="submit" ${manage ? '' : 'disabled'}>Guardar ficha</button>
+            <span class="inline-note">${manage ? 'Los cambios quedan guardados de inmediato.' : 'Tu rol solo tiene lectura.'}</span>
+          </div>
+        </form>
+      </section>
+      <aside class="card detail-card patient-panel patient-side-card">
+        <div class="section-head"><h3>Resumen clinico operativo</h3>${badge(patient.allowed_actions?.manage ? 'gestion_habilitada' : 'lectura')}</div>
+        <ul class="plain-list patient-summary-list">
+          <li><strong>ID interno:</strong> ${patient.id}</li>
+          <li><strong>Preferencia de contacto:</strong> ${patient.preferences?.preferred_channel || 'Sin preferencia'}</li>
+          <li><strong>Idioma:</strong> ${patient.preferences?.language || 'espanol'}</li>
+          <li><strong>Comunicaciones no urgentes:</strong> ${patient.preferences?.allow_non_urgent ? 'Permitidas' : 'Restringidas'}</li>
+          <li><strong>Contactos vigentes:</strong> ${(patient.contacts || []).filter((item) => item.active).length}</li>
+          <li><strong>Representantes:</strong> ${(patient.representatives || []).length}</li>
+        </ul>
+      </aside>
+    </div>
     `)}
     ${tabPanel('contacts', `
-    <section class="card detail-card">
-      <div class="section-head"><h3>Contactos</h3>${badge(patient.contacts.length)}</div>
-      <div class="stack compact">${patient.contacts.map((contact) => `
-        <article class="stack-card">
+    <div class="patient-section-grid">
+      <section class="card detail-card patient-panel">
+        <div class="section-head"><h3>Contactos</h3>${badge(patient.contacts.length)}</div>
+        <div class="stack compact">${patient.contacts.map((contact) => `
+        <article class="stack-card patient-stack-card">
           <div>
             <strong>${contact.label}</strong>
             <span>${contact.type} · ${contact.channel} · ${contact.value}</span>
-            <small>${contact.verified ? 'Verificado' : 'Pendiente'} · ${contact.active ? 'Activo' : 'Inactivo'}</small>
+            <small>${contact.active ? 'Activo' : 'Inactivo'} · ${contact.verified ? 'Validado' : 'Pendiente'}</small>
           </div>
           <div class="slot-actions">
+            ${badge(contact.verified ? 'verified' : 'pending_review')}
             ${badge(contact.excluded_from_non_urgent ? 'excluido' : 'vigente')}
             ${manage ? `<button class="slot-action secondary" data-toggle-contact="${contact.id}" data-contact-state="${contact.excluded_from_non_urgent ? 'include' : 'exclude'}">${contact.excluded_from_non_urgent ? 'Rehabilitar' : 'Excluir no urgente'}</button>` : ''}
           </div>
         </article>
-      `).join('')}</div>
-      <form id="add-contact-form" class="form-grid">
-        <input type="hidden" name="patient_id" value="${patient.id}">
-        <label>Tipo
-          <select name="type" ${manage ? '' : 'disabled'}>
-            <option value="telefono">telefono</option>
-            <option value="correo">correo</option>
-            <option value="domicilio">domicilio</option>
-            <option value="otro">otro</option>
-          </select>
-        </label>
-        <label>Canal
-          <select name="channel" ${manage ? '' : 'disabled'}>
-            <option value="telefono">telefono</option>
-            <option value="sms">sms</option>
-            <option value="whatsapp">whatsapp</option>
-            <option value="correo">correo</option>
-            <option value="domicilio">domicilio</option>
-            <option value="otro">otro</option>
-          </select>
-        </label>
-        <label>Etiqueta<input name="label" placeholder="Principal" ${manage ? '' : 'disabled'}></label>
-        <label>Valor<input name="value" placeholder="+56 9 4000 9999" ${manage ? '' : 'disabled'}></label>
-        <label>Fuente<input name="source" value="gestion_ui" ${manage ? '' : 'disabled'}></label>
-        <label class="inline-check"><input type="checkbox" name="verified" ${manage ? '' : 'disabled'}>Verificado</label>
-        <div class="form-actions span-2">
-          <button type="submit" ${manage ? '' : 'disabled'}>Agregar contacto</button>
-        </div>
-      </form>
-    </section>
+        `).join('')}</div>
+      </section>
+      <section class="card detail-card patient-panel">
+        <div class="section-head"><h3>Agregar contacto</h3>${badge(manage ? 'editable' : 'solo_lectura')}</div>
+        <form id="add-contact-form" class="form-grid">
+          <input type="hidden" name="patient_id" value="${patient.id}">
+          <label>Tipo
+            <select name="type" ${manage ? '' : 'disabled'}>
+              <option value="telefono">telefono</option>
+              <option value="correo">correo</option>
+              <option value="domicilio">domicilio</option>
+              <option value="otro">otro</option>
+            </select>
+          </label>
+          <label>Canal
+            <select name="channel" ${manage ? '' : 'disabled'}>
+              <option value="telefono">telefono</option>
+              <option value="sms">sms</option>
+              <option value="whatsapp">whatsapp</option>
+              <option value="correo">correo</option>
+              <option value="domicilio">domicilio</option>
+              <option value="otro">otro</option>
+            </select>
+          </label>
+          <label>Etiqueta
+            <select name="label" ${manage ? '' : 'disabled'}>
+              ${['Principal', 'Laboral', 'Apoderado', 'Urgencia', 'Vecino', 'Temporal'].map((item) => `<option value="${item}">${item}</option>`).join('')}
+            </select>
+          </label>
+          <label>Valor<input name="value" placeholder="+56 9 4000 9999" ${manage ? '' : 'disabled'}></label>
+          <label>Fuente<input name="source" value="gestion_ui" ${manage ? '' : 'disabled'}></label>
+          <label class="inline-check aligned-check"><input type="checkbox" name="verified" ${manage ? '' : 'disabled'}><span>Marcar como verificado</span></label>
+          <div class="form-actions span-2">
+            <button type="submit" ${manage ? '' : 'disabled'}>Agregar contacto</button>
+          </div>
+        </form>
+      </section>
+    </div>
     `)}
     ${tabPanel('network', `
-    <section class="card detail-card">
-      <div class="section-head"><h3>Representantes</h3>${badge(patient.representatives.length)}</div>
-      <div class="stack compact">${patient.representatives.map((representative) => `
-        <article class="stack-card">
+    <div class="patient-section-grid">
+      <section class="card detail-card patient-panel roomy-panel">
+        <div class="section-head"><h3>Representantes</h3>${badge(patient.representatives.length)}</div>
+        <div class="stack compact">${patient.representatives.map((representative) => `
+        <article class="stack-card patient-stack-card">
           <div>
             <strong>${representative.legal_name}</strong>
             <span>${representative.relation} · ${representative.phone || 'Sin telefono'}</span>
-            <small>${representative.verified ? 'Verificado' : 'No verificado'} · ${representative.status}</small>
+            <small>${representative.status} · ${representative.verified ? 'Validado' : 'Pendiente'}</small>
           </div>
           <div class="slot-actions">
+            ${badge(representative.verified ? 'verified' : 'pending_review')}
             ${badge(representative.status)}
             ${manage && !representative.verified ? `<button class="slot-action secondary" data-verify-representative="${representative.id}">Marcar verificado</button>` : ''}
           </div>
         </article>
-      `).join('')}</div>
-      <form id="add-representative-form" class="form-grid">
-        <input type="hidden" name="patient_id" value="${patient.id}">
-        <label>Nombre legal<input name="legal_name" ${manage ? '' : 'disabled'}></label>
-        <label>Relacion<input name="relation" placeholder="Madre, hijo, cuidador" ${manage ? '' : 'disabled'}></label>
-        <label>Telefono<input name="phone" placeholder="+56 9 4000 7777" ${manage ? '' : 'disabled'}></label>
-        <label class="inline-check"><input type="checkbox" name="verified" ${manage ? '' : 'disabled'}>Verificado</label>
-        <label class="span-2">Notas<textarea name="notes" ${manage ? '' : 'disabled'}></textarea></label>
-        <div class="form-actions span-2">
-          <button type="submit" ${manage ? '' : 'disabled'}>Agregar representante</button>
-        </div>
-      </form>
-    </section>
+        `).join('')}</div>
+      </section>
+      <section class="card detail-card patient-panel roomy-panel">
+        <div class="section-head"><h3>Agregar representante</h3>${badge(manage ? 'editable' : 'solo_lectura')}</div>
+        <form id="add-representative-form" class="form-grid">
+          <input type="hidden" name="patient_id" value="${patient.id}">
+          <label>Nombre legal<input name="legal_name" ${manage ? '' : 'disabled'}></label>
+          <label>Relacion<input name="relation" placeholder="Madre, hijo, cuidador" ${manage ? '' : 'disabled'}></label>
+          <label>Telefono<input name="phone" placeholder="+56 9 4000 7777" ${manage ? '' : 'disabled'}></label>
+          <label class="inline-check aligned-check"><input type="checkbox" name="verified" ${manage ? '' : 'disabled'}><span>Marcar como verificado</span></label>
+          <label class="span-2">Notas<textarea name="notes" ${manage ? '' : 'disabled'}></textarea></label>
+          <div class="form-actions span-2">
+            <button type="submit" ${manage ? '' : 'disabled'}>Agregar representante</button>
+          </div>
+        </form>
+      </section>
+    </div>
     `)}
     ${tabPanel('consents', `
-    <section class="card detail-card">
-      <div class="section-head"><h3>Preferencias y consentimientos</h3>${badge(patient.preferences.language || 'espanol')}</div>
-      <form id="update-preferences-form" class="form-grid">
-        <input type="hidden" name="patient_id" value="${patient.id}">
-        <label>Canal preferido
-          <select name="preferred_channel" ${manage ? '' : 'disabled'}>
-            <option value="">Sin preferencia</option>
-            ${['telefono', 'sms', 'whatsapp', 'correo', 'domicilio', 'otro'].map((item) => `<option value="${item}" ${selectedOption(patient.preferences.preferred_channel, item)}>${item}</option>`).join('')}
-          </select>
-        </label>
-        <label>Idioma
-          <select name="language" ${manage ? '' : 'disabled'}>
-            ${['espanol', 'creole', 'otro'].map((item) => `<option value="${item}" ${selectedOption(patient.preferences.language, item)}>${item}</option>`).join('')}
-          </select>
-        </label>
-        <label class="span-2 inline-check"><input type="checkbox" name="allow_non_urgent" ${checked(patient.preferences.allow_non_urgent)} ${manage ? '' : 'disabled'}>Permitir comunicaciones no urgentes</label>
-        <label class="span-2">Notas preferencias<textarea name="notes" ${manage ? '' : 'disabled'}>${patient.preferences.notes || ''}</textarea></label>
-        <div class="form-actions span-2">
-          <button type="submit" ${manage ? '' : 'disabled'}>Guardar preferencias</button>
-        </div>
-      </form>
-      <div class="stack compact">${patient.consents.map((consent) => `
-        <article class="stack-card">
+    <div class="patient-section-grid patient-section-grid-wide">
+      <section class="card detail-card patient-panel roomy-panel">
+        <div class="section-head"><h3>Preferencias de contacto</h3>${badge(patient.preferences.language || 'espanol')}</div>
+        <form id="update-preferences-form" class="form-grid">
+          <input type="hidden" name="patient_id" value="${patient.id}">
+          <label>Canal preferido
+            <select name="preferred_channel" ${manage ? '' : 'disabled'}>
+              <option value="">Sin preferencia</option>
+              ${['telefono', 'sms', 'whatsapp', 'correo', 'domicilio', 'otro'].map((item) => `<option value="${item}" ${selectedOption(patient.preferences.preferred_channel, item)}>${item}</option>`).join('')}
+            </select>
+          </label>
+          <label>Idioma
+            <select name="language" ${manage ? '' : 'disabled'}>
+              ${['espanol', 'creole', 'otro'].map((item) => `<option value="${item}" ${selectedOption(patient.preferences.language, item)}>${item}</option>`).join('')}
+            </select>
+          </label>
+          <label class="span-2 inline-check aligned-check"><input type="checkbox" name="allow_non_urgent" ${checked(patient.preferences.allow_non_urgent)} ${manage ? '' : 'disabled'}><span>Permitir comunicaciones no urgentes</span></label>
+          <label class="span-2">Notas preferencias<textarea name="notes" ${manage ? '' : 'disabled'}>${patient.preferences.notes || ''}</textarea></label>
+          <div class="form-actions span-2">
+            <button type="submit" ${manage ? '' : 'disabled'}>Guardar preferencias</button>
+          </div>
+        </form>
+      </section>
+      <section class="card detail-card patient-panel roomy-panel">
+        <div class="section-head"><h3>Consentimientos</h3>${badge(patient.consents.length)}</div>
+        <div class="stack compact">${patient.consents.map((consent) => `
+        <article class="stack-card patient-stack-card">
           <div>
             <strong>${consent.purpose}</strong>
             <span>${(consent.channel_scope || []).join(', ') || 'Sin canales'}</span>
@@ -931,29 +1166,33 @@ function patientDetailCard(patient) {
             ${manage && consent.status === 'vigente' ? `<button class="slot-action secondary" data-revoke-consent="${consent.id}">Revocar</button>` : ''}
           </div>
         </article>
-      `).join('')}</div>
-      <form id="add-consent-form" class="form-grid">
-        <input type="hidden" name="patient_id" value="${patient.id}">
-        <label>Finalidad<input name="purpose" placeholder="recordatorio_cita" ${manage ? '' : 'disabled'}></label>
-        <label>Canales<input name="channel_scope" placeholder="sms,telefono" ${manage ? '' : 'disabled'}></label>
-        <label>Fuente<input name="source" value="gestion_ui" ${manage ? '' : 'disabled'}></label>
-        <label class="inline-check"><input type="checkbox" name="granted" checked ${manage ? '' : 'disabled'}>Vigente</label>
-        <label class="span-2">Notas<textarea name="notes" ${manage ? '' : 'disabled'}></textarea></label>
-        <div class="form-actions span-2">
-          <button type="submit" ${manage ? '' : 'disabled'}>Agregar consentimiento</button>
-        </div>
-      </form>
-    </section>
+        `).join('')}</div>
+        <form id="add-consent-form" class="form-grid consent-form-grid">
+          <input type="hidden" name="patient_id" value="${patient.id}">
+          <label>Finalidad<input name="purpose" placeholder="recordatorio_cita" ${manage ? '' : 'disabled'}></label>
+          <label>Canales<input name="channel_scope" placeholder="sms,telefono" ${manage ? '' : 'disabled'}></label>
+          <label>Fuente<input name="source" value="gestion_ui" ${manage ? '' : 'disabled'}></label>
+          <label class="inline-check aligned-check"><input type="checkbox" name="granted" checked ${manage ? '' : 'disabled'}><span>Vigente</span></label>
+          <label class="span-2">Notas<textarea name="notes" ${manage ? '' : 'disabled'}></textarea></label>
+          <div class="form-actions span-2">
+            <button type="submit" ${manage ? '' : 'disabled'}>Agregar consentimiento</button>
+          </div>
+        </form>
+      </section>
+    </div>
     `)}
-  `, 'data-drawer-kind="patient"');
+  `, 'data-drawer-kind="patient"', detailTabs([
+    ['summary', 'Ficha'],
+    ['contacts', 'Contactos'],
+    ['network', 'Representantes'],
+    ['consents', 'Consentimientos']
+  ]));
 }
 
 function waitlistDetailCard(entry) {
   if (!entry) {
     return '';
   }
-  const writeEnabled = can('waitlist.write');
-  const offerSlots = waitlistOfferableSlots(entry);
   return drawerShell(`Gestion de espera · ${entry.patient_name}`, entry.status, `
     ${detailTabs([
       ['summary', 'Resumen'],
@@ -969,26 +1208,9 @@ function waitlistDetailCard(entry) {
         <li>Prioridad aplicada: ${entry.priority} por ${entry.priority_rule}.</li>
         <li>Antiguedad: ${entry.requested_days} dias.</li>
       </ul>
-      <div class="grid two">
-        <form id="offer-waitlist-form" class="form-grid">
-          <label>Cupo a ofertar
-            <select name="slot_id" ${entry.allowed_actions?.offer ? '' : 'disabled'}>
-              <option value="">Selecciona cupo</option>
-              ${offerSlots.map((slot) => `<option value="${slot.id}">${slot.day} ${slot.time} · ${slot.establishment_name}</option>`).join('')}
-            </select>
-          </label>
-          <label class="span-2">Nota de oferta<input name="note" placeholder="Reserva temporal controlada" ${entry.allowed_actions?.offer ? '' : 'disabled'}></label>
-          <div class="form-actions span-2">
-            <button type="submit" ${entry.allowed_actions?.offer ? '' : 'disabled'}>Crear oferta temporal</button>
-            <span class="inline-note">${writeEnabled ? 'La oferta se revisa manualmente antes de asignar un cupo.' : 'Solo lectura para tu rol.'}</span>
-          </div>
-        </form>
-        <form id="close-waitlist-form" class="form-grid">
-          <label class="span-2">Motivo de cierre<input name="reason" placeholder="Resuelto por otro canal" ${entry.allowed_actions?.close ? '' : 'disabled'}></label>
-          <div class="form-actions span-2">
-            <button type="submit" ${entry.allowed_actions?.close ? '' : 'disabled'}>Cerrar espera</button>
-          </div>
-        </form>
+      <div class="hero-actions">
+        <button class="slot-action" type="button" data-open-modal="waitlist-offer" data-id="${entry.id}" ${entry.allowed_actions?.offer ? '' : 'disabled'}>Crear oferta</button>
+        <button class="slot-action secondary" type="button" data-open-modal="waitlist-close" data-id="${entry.id}" ${entry.allowed_actions?.close ? '' : 'disabled'}>Cerrar espera</button>
       </div>
     </section>
     `)}
@@ -1259,7 +1481,7 @@ function renderActiveModal() {
   if (modal.kind === 'waitlist-create') {
     const establishments = state.bootstrap.establishments || [];
     const services = (state.bootstrap.services || []).filter((service) => establishments.some((item) => item.id === service.establishment_id));
-    return modalShell('Registrar necesidad', `
+    return modalShell('Registrar espera', `
       <form id="create-waitlist-form" class="form-grid">
         <label>Paciente
           <select name="patient_id" ${can('waitlist.write') ? '' : 'disabled'}>
@@ -1283,35 +1505,208 @@ function renderActiveModal() {
       </form>
     `, 'data-modal-kind="waitlist-create"');
   }
+  if (modal.kind === 'waitlist-offer') {
+    const entry = currentWaitlist().find((item) => item.id === modal.id);
+    const offerSlots = waitlistOfferableSlots(entry);
+    return modalShell('Crear oferta', `
+      <form id="offer-waitlist-form" class="form-grid">
+        <label>Cupo disponible
+          <select name="slot_id" ${entry?.allowed_actions?.offer ? '' : 'disabled'}>
+            <option value="">Selecciona cupo</option>
+            ${offerSlots.map((slot) => `<option value="${slot.id}">${slot.day} ${slot.time} · ${slot.establishment_name}</option>`).join('')}
+          </select>
+        </label>
+        <label class="span-2">Nota operativa<input name="note" placeholder="Reserva temporal controlada" ${entry?.allowed_actions?.offer ? '' : 'disabled'}></label>
+        <div class="form-actions span-2">
+          <button type="submit" ${entry?.allowed_actions?.offer ? '' : 'disabled'}>Crear oferta</button>
+        </div>
+      </form>
+    `, 'data-modal-kind="waitlist-offer"');
+  }
+  if (modal.kind === 'waitlist-close') {
+    const entry = currentWaitlist().find((item) => item.id === modal.id);
+    return modalShell('Cerrar espera', `
+      <form id="close-waitlist-form" class="form-grid">
+        <label>Motivo
+          <select name="reason" ${entry?.allowed_actions?.close ? '' : 'disabled'}>
+            <option value="Resuelto por otro canal">Resuelto por otro canal</option>
+            <option value="Paciente desiste">Paciente desiste</option>
+            <option value="Caso duplicado">Caso duplicado</option>
+            <option value="Derivado a otra via">Derivado a otra via</option>
+          </select>
+        </label>
+        <label class="span-2">Detalle adicional<input name="detail" placeholder="Observacion complementaria"></label>
+        <div class="form-actions span-2">
+          <button type="submit" ${entry?.allowed_actions?.close ? '' : 'disabled'}>Cerrar espera</button>
+        </div>
+      </form>
+    `, 'data-modal-kind="waitlist-close"');
+  }
   if (modal.kind === 'contact-template-create') {
+    const template = templateById(modal.templateId);
+    const isEdit = modal.templateMode === 'edit' && template;
     return modalShell('Crear plantilla', `
-      <form id="create-contact-template-form" class="form-grid">
-        <label>Codigo<input name="code" placeholder="TPL-CONTACT-01" ${rbac().action_access?.template_manage ? '' : 'disabled'}></label>
-        <label>Nombre<input name="name" placeholder="Recordatorio control" ${rbac().action_access?.template_manage ? '' : 'disabled'}></label>
-        <label>Version<input name="version" type="number" min="1" value="1" ${rbac().action_access?.template_manage ? '' : 'disabled'}></label>
+      <form id="${isEdit ? 'update-contact-template-form' : 'create-contact-template-form'}" class="form-grid" data-template-id="${template?.id || ''}">
+        <label>Codigo<input name="code" placeholder="TPL-CONTACT-01" value="${template?.code || ''}" ${rbac().action_access?.template_manage ? '' : 'disabled'}></label>
+        <label>Nombre<input name="name" placeholder="Recordatorio control" value="${template?.name || ''}" ${rbac().action_access?.template_manage ? '' : 'disabled'}></label>
+        <label>Version<input name="version" type="number" min="1" value="${template?.version || 1}" ${rbac().action_access?.template_manage ? '' : 'disabled'}></label>
         <label>Estado
           <select name="status" ${rbac().action_access?.template_manage ? '' : 'disabled'}>
-            ${['draft', 'active', 'archived'].map((item) => `<option value="${item}">${item}</option>`).join('')}
+            ${['draft', 'active', 'archived'].map((item) => `<option value="${item}" ${selectedOption(template?.status, item)}>${item}</option>`).join('')}
           </select>
         </label>
         <label>Canal
           <select name="channel" ${rbac().action_access?.template_manage ? '' : 'disabled'}>
-            ${['telefono', 'sms', 'correo', 'whatsapp', 'portal'].map((item) => `<option value="${item}">${item}</option>`).join('')}
+            ${['telefono', 'sms', 'correo', 'whatsapp', 'portal'].map((item) => `<option value="${item}" ${selectedOption(template?.channel, item)}>${item}</option>`).join('')}
           </select>
         </label>
         <label>Idioma
           <select name="language" ${rbac().action_access?.template_manage ? '' : 'disabled'}>
-            ${['espanol', 'creole', 'otro'].map((item) => `<option value="${item}">${item}</option>`).join('')}
+            ${['espanol', 'creole', 'otro'].map((item) => `<option value="${item}" ${selectedOption(template?.language, item)}>${item}</option>`).join('')}
           </select>
         </label>
-        <label class="span-2">Finalidad<input name="purpose" placeholder="contactabilidad_preventiva" ${rbac().action_access?.template_manage ? '' : 'disabled'}></label>
-        <label class="span-2">Contenido<textarea name="content" ${rbac().action_access?.template_manage ? '' : 'disabled'} placeholder="Texto aprobado"></textarea></label>
-        <label class="span-2 inline-check"><input type="checkbox" name="contains_sensitive_detail" ${rbac().action_access?.template_manage ? '' : 'disabled'}>Permite detalle sensible</label>
+        <label class="span-2">Finalidad<input name="purpose" placeholder="contactabilidad_preventiva" value="${template?.purpose || ''}" ${rbac().action_access?.template_manage ? '' : 'disabled'}></label>
+        <label class="span-2">Contenido<textarea name="content" ${rbac().action_access?.template_manage ? '' : 'disabled'} placeholder="Texto aprobado">${template?.content || ''}</textarea></label>
+        <label class="span-2 inline-check"><input type="checkbox" name="contains_sensitive_detail" ${checked(template?.contains_sensitive_detail)} ${rbac().action_access?.template_manage ? '' : 'disabled'}>Permite detalle sensible</label>
         <div class="form-actions span-2">
-          <button type="submit" ${rbac().action_access?.template_manage ? '' : 'disabled'}>Crear plantilla</button>
+          <button type="submit" ${rbac().action_access?.template_manage ? '' : 'disabled'}>${isEdit ? 'Guardar cambios' : 'Crear plantilla'}</button>
         </div>
       </form>
     `, 'data-modal-kind="contact-template-create"');
+  }
+  if (modal.kind === 'contact-template-view') {
+    const template = templateById(modal.templateId);
+    if (!template) {
+      return '';
+    }
+    return modalShell(`Plantilla ${template.code}`, `
+      <section class="card detail-card">
+        <div class="section-head"><h3>${template.name}</h3>${badge(template.status)}</div>
+        <ul class="plain-list">
+          <li>Canal: ${template.channel}.</li>
+          <li>Version: ${template.version}.</li>
+          <li>Finalidad: ${template.purpose}.</li>
+          <li>Idioma: ${template.language}.</li>
+        </ul>
+        <div class="template-preview">${template.content || 'Sin contenido definido.'}</div>
+      </section>
+    `, 'data-modal-kind="contact-template-view"');
+  }
+  if (modal.kind === 'contact-template-browser') {
+    const templates = currentContactTemplates();
+    const selectedTemplate = selectedTemplateInBrowser();
+    return modalShell('Plantillas', `
+      <section class="card detail-card template-browser-shell">
+        <div class="section-head section-head-wrap">
+          <h3>Plantillas versionadas</h3>
+          <button class="slot-action secondary compact" type="button" data-open-modal="contact-template-create" ${rbac().action_access?.template_manage ? '' : 'disabled'}>Nueva plantilla</button>
+        </div>
+        <div class="template-browser-grid">
+          <div class="template-browser-list">
+            ${templates.map((item) => `
+              <button class="template-browser-item ${selectedTemplate?.id === item.id ? 'active' : ''}" type="button" data-template-preview="${item.id}">
+                <strong>${item.code} v${item.version}</strong>
+                <span>${item.name}</span>
+                <small>${item.channel} · ${item.purpose}</small>
+              </button>
+            `).join('')}
+          </div>
+          <div class="template-browser-preview">
+            ${selectedTemplate ? `
+              <div class="section-head">
+                <div>
+                  <h3>${selectedTemplate.name}</h3>
+                  <p class="muted compact-note">${selectedTemplate.code} · ${selectedTemplate.channel} · ${selectedTemplate.purpose}</p>
+                </div>
+                <div class="slot-actions">
+                  ${badge(selectedTemplate.status)}
+                  <button class="slot-action secondary compact" type="button" data-open-modal="contact-template-create" data-template-id="${selectedTemplate.id}" data-template-mode="edit" ${rbac().action_access?.template_manage ? '' : 'disabled'}>Editar</button>
+                </div>
+              </div>
+              <ul class="plain-list">
+                <li>Idioma: ${selectedTemplate.language}.</li>
+                <li>Version: ${selectedTemplate.version}.</li>
+                <li>Detalle sensible: ${selectedTemplate.contains_sensitive_detail ? 'permitido' : 'no incluido'}.</li>
+              </ul>
+              <div class="template-preview">${selectedTemplate.content || 'Sin contenido definido.'}</div>
+            ` : '<p class="muted">No hay plantillas disponibles.</p>'}
+          </div>
+        </div>
+      </section>
+    `, 'data-modal-kind="contact-template-browser"');
+  }
+  if (modal.kind === 'campaign-create') {
+    const establishments = state.bootstrap.establishments || [];
+    const templates = state.bootstrap.contact_templates || [];
+    const surveys = state.bootstrap.surveys || [];
+    return modalShell('Crear campana', `
+      <form id="create-campaign-form" class="form-grid">
+        <label>Nombre<input name="name" placeholder="Campana control invierno" ${rbac().action_access?.campaign_manage ? '' : 'disabled'}></label>
+        <label>Finalidad<input name="purpose" placeholder="promocion_preventiva" ${rbac().action_access?.campaign_manage ? '' : 'disabled'}></label>
+        <label>Canal
+          <select name="channel" ${rbac().action_access?.campaign_manage ? '' : 'disabled'}>
+            ${['sms', 'correo', 'whatsapp', 'telefono'].map((item) => `<option value="${item}">${item}</option>`).join('')}
+          </select>
+        </label>
+        <label>Establecimiento
+          <select name="establishment_id" ${rbac().action_access?.campaign_manage ? '' : 'disabled'}>
+            ${establishments.map((item) => `<option value="${item.id}">${item.name}</option>`).join('')}
+          </select>
+        </label>
+        <label class="span-2">Segmento manual<input name="audience" placeholder="Pacientes cronicos con consentimiento vigente" ${rbac().action_access?.campaign_manage ? '' : 'disabled'}></label>
+        <label>Plantilla
+          <select name="template_id" ${rbac().action_access?.campaign_manage ? '' : 'disabled'}>
+            ${templates.map((item) => `<option value="${item.id}">${item.code} · ${item.channel}</option>`).join('')}
+          </select>
+        </label>
+        <label>Encuesta asociada
+          <select name="survey_id" ${rbac().action_access?.campaign_manage ? '' : 'disabled'}>
+            <option value="">Sin encuesta</option>
+            ${surveys.map((item) => `<option value="${item.id}">${item.name}</option>`).join('')}
+          </select>
+        </label>
+        <div class="form-actions span-2">
+          <button type="submit" ${rbac().action_access?.campaign_manage ? '' : 'disabled'}>Crear campana</button>
+        </div>
+      </form>
+    `, 'data-modal-kind="campaign-create"');
+  }
+  if (modal.kind === 'sidra-create') {
+    const establishments = state.bootstrap.establishments || [];
+    const entityOptions = sidraEntityOptions();
+    return modalShell('Encolar evento SIDRA', `
+      <form id="create-sidra-event-form" class="form-grid">
+        <label>Tipo<input name="type" value="appointment.manual_sync"></label>
+        <label>Entidad
+          <select name="entity">
+            ${['appointment', 'waitlist', 'contact_case', 'patient', 'manual_batch'].map((item) => `<option value="${item}">${item}</option>`).join('')}
+          </select>
+        </label>
+        <label>Entity ID
+          <select name="entity_id">
+            ${Object.entries(entityOptions).map(([group, items]) => `
+              <optgroup label="${group}">
+                ${items.map((item) => `<option value="${item.id}">${item.label}</option>`).join('')}
+              </optgroup>
+            `).join('')}
+          </select>
+        </label>
+        <label>Establecimiento
+          <select name="establishment_id">
+            ${establishments.map((item) => `<option value="${item.id}">${item.name}</option>`).join('')}
+          </select>
+        </label>
+        <label>Resultado por defecto
+          <select name="simulation_default_result">
+            ${['acknowledged', 'failed', 'rejected', 'discrepancy'].map((item) => `<option value="${item}">${item}</option>`).join('')}
+          </select>
+        </label>
+        <label class="span-2">Nota<input name="note" placeholder="Evento para seguimiento operativo"></label>
+        <div class="form-actions span-2">
+          <button type="submit">Encolar evento</button>
+        </div>
+      </form>
+    `, 'data-modal-kind="sidra-create"');
   }
   if (modal.kind === 'slot-block') {
     const slot = (state.bootstrap.slots || []).find((item) => item.id === modal.slotId);
@@ -1338,54 +1733,68 @@ function renderActiveModal() {
 
 function layout(content) {
   const runtime = state.bootstrap?.runtime;
-  const summary = state.bootstrap?.summary;
   const currentUser = state.bootstrap?.current_user;
   const drawerMarkup = renderActiveDrawer();
   const modalMarkup = renderActiveModal();
   app.innerHTML = `
-    <div class="shell" data-auth-state="authenticated">
+    <div class="shell shell-template ${state.sidebarHidden ? 'sidebar-hidden' : ''}" data-auth-state="authenticated">
       <aside class="sidebar">
-        <div class="brand">
-          <span class="mark">QS</span>
-          <div>
-            <strong>Quilicura Salud</strong>
-            <small>Gestion diaria</small>
+        <div class="sidebar-hero">
+          <div class="brand">
+            <span class="mark">QS</span>
+            <div>
+              <strong>Quilicura Salud</strong>
+              <small>Portal operativo</small>
+            </div>
+          </div>
+          <p class="eyebrow">Sistema de trabajo</p>
+          <div class="sidebar-kicker">
+            <strong>Centro de operaciones</strong>
+            <span>Frontend operativo alineado con la plantilla institucional vigente y optimizado para uso continuo.</span>
           </div>
         </div>
         <nav class="nav">${nav.map(([id, label]) => {
           const allowed = canView(id);
-          return `<button class="nav-btn ${state.view === id ? 'active' : ''} ${allowed ? '' : 'locked'}" data-view="${id}" ${allowed ? '' : 'disabled'}>${label}${allowed ? '' : '<span class="nav-note">Bloqueado</span>'}</button>`;
+          return `<button class="nav-btn ${state.view === id ? 'active' : ''} ${allowed ? '' : 'locked'}" data-view="${id}" ${allowed ? '' : 'disabled'}><span class="sidebar-label">${label}</span>${allowed ? '' : '<span class="nav-note">Bloqueado</span>'}</button>`;
         }).join('')}</nav>
-        <section class="safe-box">
+        <section class="safe-box sidebar-summary">
           <strong>Sesion activa</strong>
           <span>${currentUser?.display_name || 'Usuario'}</span>
           <span>${rbac().role?.label || currentUser?.role || 'Sin rol'}</span>
-          <span>Expira: ${sessionExpiresText()}</span>
+          <span>${sessionExpiresText()}</span>
         </section>
-        <section class="safe-box">
+        <section class="safe-box sidebar-summary">
           <strong>Alcance visible</strong>
           <span>${scopeList()}</span>
-          <span>${(rbac().permissions || []).length} accesos habilitados para esta sesion</span>
-          <span>Controles de acceso activos</span>
+          <span>${(rbac().permissions || []).length} accesos habilitados</span>
         </section>
       </aside>
+      <button
+        type="button"
+        class="shell-edge-toggle ${state.sidebarHidden ? 'is-collapsed' : ''}"
+        data-sidebar-visibility
+        aria-pressed="${state.sidebarHidden}"
+        aria-label="${state.sidebarHidden ? 'Mostrar menu lateral' : 'Ocultar menu lateral'}"
+      >
+        <span class="shell-edge-icon" aria-hidden="true">${state.sidebarHidden ? '▶' : '◀'}</span>
+        <span class="shell-edge-text">${state.sidebarHidden ? 'Menu' : 'Ocultar'}</span>
+      </button>
       <main class="main">
         <header class="topbar">
-          <div>
+          <div class="topbar-copy">
             <p class="eyebrow">Quilicura Salud</p>
             <h1>${currentViewLabel()}</h1>
-            <p>${currentUser?.facility || 'Quilicura'} · ${rbac().role?.label || currentUser?.role || 'usuario'} · plataforma lista para gestion diaria</p>
+            <p class="muted">${currentUser?.facility || 'Quilicura'} · ${rbac().role?.label || currentUser?.role || 'usuario'} · ${runtime?.version || 'runtime local'}</p>
           </div>
-          <div class="actions">
+          <div class="actions actions-utility">
+            <label class="search-field">
+              <span>Busqueda operativa</span>
+              <input id="global-search" placeholder="${currentSearchPlaceholder()}" value="${state.query}">
+            </label>
             <button id="refresh">Actualizar</button>
             <button id="logout" class="ghost">Cerrar sesion</button>
           </div>
         </header>
-        <section class="banner">
-          ${badge(state.health?.status === 'ok' ? 'Disponible' : state.health?.status || 'offline')}
-          <span>${state.health?.status === 'ok' ? 'Sistema disponible para gestion operativa.' : 'Revisa la disponibilidad del sistema antes de continuar.'}</span>
-          <span>${summary ? `${summary.active_patients} pacientes en seguimiento · ${summary.managed_patients} con gestion activa · ${summary.audit_entries} movimientos recientes` : 'Sin resumen disponible'}</span>
-        </section>
         ${content}
       </main>
     </div>
@@ -1406,6 +1815,14 @@ function layout(content) {
   });
   document.getElementById('refresh')?.addEventListener('click', loadProtectedApp);
   document.getElementById('logout')?.addEventListener('click', logout);
+  app.querySelector('[data-sidebar-visibility]')?.addEventListener('click', () => {
+    state.sidebarHidden = !state.sidebarHidden;
+    render();
+  });
+  document.getElementById('global-search')?.addEventListener('input', (event) => {
+    state.query = event.currentTarget.value;
+    render();
+  });
   document.querySelector('[data-close-toast]')?.addEventListener('click', () => {
     setActionMessage(null);
     render();
@@ -1422,6 +1839,28 @@ function layout(content) {
       render();
     });
   });
+  app.querySelectorAll('[data-campaign-panel]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setCampaignPanel(button.dataset.campaignPanel);
+      render();
+    });
+  });
+  app.querySelectorAll('[data-availability-filter]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setAgendaAvailabilityFilter(button.dataset.availabilityFilter);
+      render();
+    });
+  });
+  app.querySelectorAll('[data-template-preview]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.templateBrowserTemplateId = button.dataset.templatePreview;
+      render();
+    });
+  });
+  document.getElementById('patient-establishment-filter')?.addEventListener('change', (event) => {
+    state.patientEstablishmentFilter = event.currentTarget.value;
+    render();
+  });
   app.querySelectorAll('[data-open-drawer]').forEach((button) => {
     button.addEventListener('click', () => {
       openDrawer(button.dataset.openDrawer, button.dataset.id);
@@ -1430,7 +1869,7 @@ function layout(content) {
   });
   app.querySelectorAll('[data-open-modal]').forEach((button) => {
     button.addEventListener('click', () => {
-      openModal(button.dataset.openModal, { slotId: button.dataset.slotId || '' });
+      openModal(button.dataset.openModal, { ...button.dataset });
       render();
     });
   });
@@ -1651,7 +2090,7 @@ function filteredWaitlist() {
     patient: (left, right) => compareText(left.patient_name, right.patient_name),
     service: (left, right) => compareText(left.service, right.service),
     status: (left, right) => compareText(left.status, right.status) || compareNumber(left.priority_rank, right.priority_rank)
-  });
+  }, state.sortDir.waitlist);
 }
 
 function waitlistOfferableSlots(entry) {
@@ -1707,10 +2146,11 @@ async function resolveWaitlistOffer(offerId, data) {
 }
 
 async function closeWaitlistEntry(waitlistId, data) {
+  const reason = [data.get('reason'), data.get('detail')].filter(Boolean).join(' · ');
   const payload = await request(`/api/v1/lista-espera/${encodeURIComponent(waitlistId)}/cerrar`, {
     method: 'POST',
     body: JSON.stringify({
-      reason: data.get('reason')
+      reason
     })
   });
   applyBootstrap(payload);
@@ -1734,12 +2174,33 @@ function filteredContactCases() {
     patient: (left, right) => compareText(left.patient_name, right.patient_name),
     attempts: (left, right) => compareNumber(right.attempt_count, left.attempt_count) || compareText(left.patient_name, right.patient_name),
     status: (left, right) => compareText(left.status, right.status) || compareDate(right.updated_at || right.created_at, left.updated_at || left.created_at)
-  });
+  }, state.sortDir.contact);
 }
 
 async function createContactTemplate(data) {
   const payload = await request('/api/v1/contactabilidad/plantillas', {
     method: 'POST',
+    body: JSON.stringify({
+      code: data.get('code'),
+      name: data.get('name'),
+      channel: data.get('channel'),
+      purpose: data.get('purpose'),
+      language: data.get('language'),
+      status: data.get('status'),
+      version: Number(data.get('version') || 1),
+      contains_sensitive_detail: data.get('contains_sensitive_detail') === 'on',
+      content: data.get('content')
+    })
+  });
+  applyBootstrap(payload);
+  closeModal();
+  setActionMessage(payload.message, 'pass');
+  render();
+}
+
+async function updateContactTemplate(templateId, data) {
+  const payload = await request(`/api/v1/contactabilidad/plantillas/${encodeURIComponent(templateId)}`, {
+    method: 'PATCH',
     body: JSON.stringify({
       code: data.get('code'),
       name: data.get('name'),
@@ -1836,6 +2297,7 @@ async function createCampaign(data) {
     })
   });
   applyBootstrap(payload);
+  closeModal();
   setActionMessage(payload.message, 'pass');
   render();
 }
@@ -1873,6 +2335,15 @@ async function exportCampaignMetrics(data) {
       identifiable: false
     })
   });
+  state.reportExportPreview = {
+    kind: 'campaign',
+    report: {
+      id: data.get('campaign_id'),
+      purpose: data.get('purpose'),
+      period: 'campana'
+    },
+    metrics: payload.export?.metrics || {}
+  };
   setActionMessage(`Exportacion agregada lista: ${payload.export.metrics.delivered} envios / ${payload.export.metrics.responded} respuestas.`, 'pass');
   render();
 }
@@ -1920,6 +2391,7 @@ async function createMonthlyReport(data) {
     })
   });
   applyBootstrap(payload);
+  state.reportExportPreview = null;
   setActionMessage(payload.message, 'pass');
   render();
 }
@@ -1936,6 +2408,7 @@ async function exportMonthlyReport(data) {
       identifiable: false
     })
   });
+  state.reportExportPreview = payload.export || null;
   const totals = payload.export?.report?.totals || {};
   setActionMessage(`Exportacion agregada lista: ${totals.appointments_created || 0} citas y ${totals.contact_attempts || 0} contactos.`, 'pass');
   render();
@@ -1983,7 +2456,7 @@ function filteredSidraEvents() {
     recent: (left, right) => compareDate(right.created_at, left.created_at),
     retries: (left, right) => compareNumber(right.retries, left.retries) || compareText(left.id, right.id),
     event: (left, right) => compareText(left.type, right.type)
-  });
+  }, state.sortDir.sidra);
 }
 
 async function createSidraEvent(data) {
@@ -2262,17 +2735,20 @@ function bindWaitlistActions() {
 }
 
 function bindContactActions() {
-  app.querySelectorAll('[data-select-contact-case]').forEach((button) => {
-    button.addEventListener('click', () => {
-      openDrawer('contact-case', button.dataset.selectContactCase);
-      render();
-    });
-  });
   document.getElementById('create-contact-template-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     try {
       await createContactTemplate(new FormData(event.currentTarget));
       event.currentTarget.reset();
+    } catch (error) {
+      setActionMessage(error.message, error.payload?.error === 'permission_denied' ? 'denied' : 'warn');
+      render();
+    }
+  });
+  document.getElementById('update-contact-template-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    try {
+      await updateContactTemplate(event.currentTarget.dataset.templateId, new FormData(event.currentTarget));
     } catch (error) {
       setActionMessage(error.message, error.payload?.error === 'permission_denied' ? 'denied' : 'warn');
       render();
@@ -2305,6 +2781,12 @@ function bindContactActions() {
       setActionMessage(error.message, error.payload?.error === 'permission_denied' ? 'denied' : 'warn');
       render();
     }
+  });
+  app.querySelectorAll('[data-select-contact-case]').forEach((button) => {
+    button.addEventListener('click', () => {
+      openDrawer('contact-case', button.dataset.selectContactCase);
+      render();
+    });
   });
 }
 
@@ -2468,6 +2950,11 @@ const views = {
   agenda() {
     const filtered = filteredAgendaSlots();
     const appointments = filteredAppointments();
+    const availabilityCounts = {
+      disponible: (state.bootstrap?.slots || []).filter((item) => item.status === 'disponible').length,
+      reservado: (state.bootstrap?.slots || []).filter((item) => item.status === 'reservado').length,
+      bloqueado: (state.bootstrap?.slots || []).filter((item) => item.status === 'bloqueado').length
+    };
     const agendaPanelButtons = `
       <div class="subnav-tabs" role="tablist" aria-label="Submenu agenda">
         <button class="subnav-tab ${state.agendaPanel === 'appointments' ? 'active' : ''}" type="button" data-agenda-panel="appointments">Citas visibles</button>
@@ -2481,36 +2968,50 @@ const views = {
         ['Bloqueos posibles', filtered.filter((item) => item.allowed_actions?.block).length, 'Accion sensible confirmada']
       ])}
       <section class="card">
-        <div class="section-head"><h2>Agenda operativa</h2>${badge(can('agenda.write') ? 'agenda.write' : 'agenda.read')}</div>
-        <p class="muted">${can('agenda.write') ? 'La agenda mantiene reservas reales y concentra mutaciones en paneles laterales para evitar scroll operativo innecesario.' : 'Tu rol puede revisar agenda, pero no crear citas.'}</p>
-        <div class="hero-actions">
+        <div class="section-head section-head-wrap">
+          <h2>Agenda operativa</h2>
           <button class="slot-action" type="button" data-open-modal="appointment-create" ${can('agenda.write') ? '' : 'disabled'}>Nueva cita</button>
-          <span class="inline-note">Usa el buscador superior para filtrar por cupo, profesional, paciente o establecimiento.</span>
         </div>
         ${agendaPanelButtons}
       </section>
       ${state.agendaPanel === 'availability' ? `
         <section class="card">
           <div class="section-head"><h2>Disponibilidad real</h2>${badge(filtered.length)}</div>
-          <div class="stack scroll-region scroll-region-xl">${filtered.map((slot) => `
-            <article class="slot">
-              <div>
-                <strong>${slot.day} ${slot.time} · ${slot.service_name || slot.service}</strong>
-                <span>${slot.professional_name || slot.professional}</span>
-                <small class="slot-meta">${slot.id} · ${slot.establishment_name}</small>
-              </div>
-              <div class="slot-actions">
-                ${badge(slot.status)}
-                ${slot.allowed_actions?.block ? `<button class="slot-action" type="button" data-open-modal="slot-block" data-slot-id="${slot.id}">Bloquear cupo</button>` : `<span class="inline-note">${slot.allowed_actions?.book ? 'Reservable desde modal' : 'No reservable'}</span>`}
-              </div>
-            </article>
-          `).join('')}</div>
+          <div class="status-legend" role="tablist" aria-label="Filtros de disponibilidad">
+            <button class="legend-chip ${state.agendaAvailabilityFilter === 'all' ? 'active' : ''}" type="button" data-availability-filter="all">Todos ${badge(state.bootstrap?.slots?.length || 0)}</button>
+            <button class="legend-chip disponible ${state.agendaAvailabilityFilter === 'disponible' ? 'active' : ''}" type="button" data-availability-filter="disponible">Disponible ${badge(availabilityCounts.disponible)}</button>
+            <button class="legend-chip reservado ${state.agendaAvailabilityFilter === 'reservado' ? 'active' : ''}" type="button" data-availability-filter="reservado">Reservado ${badge(availabilityCounts.reservado)}</button>
+            <button class="legend-chip bloqueado ${state.agendaAvailabilityFilter === 'bloqueado' ? 'active' : ''}" type="button" data-availability-filter="bloqueado">Bloqueado ${badge(availabilityCounts.bloqueado)}</button>
+          </div>
+          <div class="table-wrap scroll-region scroll-region-xl">
+            <table>
+              <thead>
+                <tr>
+                  <th>${sortHeader('agenda', 'status', 'Estado')}</th>
+                  <th>${sortHeader('agenda', 'time', 'Horario')}</th>
+                  <th>${sortHeader('agenda', 'service', 'Prestacion')}</th>
+                  <th>${sortHeader('agenda', 'professional', 'Profesional')}</th>
+                  <th>Establecimiento</th>
+                  <th>Accion</th>
+                </tr>
+              </thead>
+              <tbody>${filtered.map((slot) => `
+                <tr class="availability-row ${String(slot.status || '').toLowerCase()}">
+                  <td>${badge(slotStatusLabel(slot.status))}</td>
+                  <td><strong>${slot.day} ${slot.time}</strong><small>${slot.id}</small></td>
+                  <td>${slot.service_name || slot.service}</td>
+                  <td>${slot.professional_name || slot.professional}</td>
+                  <td>${slot.establishment_name}</td>
+                  <td>${slot.allowed_actions?.block ? `<button class="slot-action secondary compact" type="button" data-open-modal="slot-block" data-slot-id="${slot.id}">Bloquear</button>` : `<span class="inline-note">${slot.allowed_actions?.book ? 'Reservable' : 'Sin accion'}</span>`}</td>
+                </tr>
+              `).join('')}</tbody>
+            </table>
+          </div>
         </section>
       ` : `
         <section class="card">
         <div class="section-head"><h2>Citas visibles</h2>${badge(appointments.length)}</div>
-        <p class="muted">Ordena directamente por columnas en la tabla.</p>
-        <div class="table-wrap scroll-region scroll-region-xl"><table><thead><tr><th>${sortHeader('agenda', 'id', 'ID')}</th><th>${sortHeader('agenda', 'patient', 'Paciente')}</th><th>Prestacion</th><th>${sortHeader('agenda', 'time', 'Cupo')}</th><th>${sortHeader('agenda', 'status', 'Estado')}</th><th>Accion</th></tr></thead><tbody>${appointments.map((item) => `<tr class="${item.id === state.selectedAppointmentId ? 'row-active' : ''}"><td>${item.id}</td><td>${item.patient_name}</td><td>${item.service_name || '-'}</td><td>${item.slot_label}</td><td>${badge(item.status)}</td><td><button class="slot-action secondary" type="button" data-open-drawer="appointment" data-id="${item.id}">Gestionar</button></td></tr>`).join('')}</tbody></table></div>
+        <div class="table-wrap scroll-region scroll-region-xl"><table><thead><tr><th>${sortHeader('agenda', 'id', 'ID')}</th><th>${sortHeader('agenda', 'patient', 'Paciente')}</th><th>Prestacion</th><th>${sortHeader('agenda', 'time', 'Cupo')}</th><th>${sortHeader('agenda', 'status', 'Estado')}</th><th>Accion</th></tr></thead><tbody>${appointments.map((item) => `<tr class="${item.id === state.selectedAppointmentId ? 'row-active' : ''}"><td>${item.id}</td><td>${item.patient_name}</td><td>${item.service_name || '-'}</td><td>${item.slot_label}</td><td>${badge(item.status)}</td><td><button class="slot-action secondary compact" type="button" data-open-drawer="appointment" data-id="${item.id}">Gestionar</button></td></tr>`).join('')}</tbody></table></div>
         </section>
       `}
     `;
@@ -2518,6 +3019,7 @@ const views = {
   patients() {
     const patients = filteredPatients();
     const manage = can('patients.write');
+    const establishments = state.bootstrap.establishments || [];
     return `
       ${compactSummaryCards([
         ['Pacientes visibles', patients.length, 'Listado principal'],
@@ -2525,13 +3027,19 @@ const views = {
         ['Con contacto', patients.filter((item) => (item.contacts || []).length).length, 'Seguimiento disponible']
       ])}
       <section class="card">
-          <div class="section-head"><h2>Pacientes visibles</h2>${badge(patients.length)}</div>
-          <p class="muted">${manage ? 'La alta de pacientes queda arriba y la ficha abre en drawer con tabs fijos para evitar que se escondan.' : 'Tu rol puede consultar la ficha, pero no mutarla.'}</p>
-          <div class="hero-actions">
+          <div class="section-head section-head-wrap">
+            <h2>Pacientes visibles</h2>
             <button class="slot-action" type="button" data-open-modal="patient-create" ${manage ? '' : 'disabled'}>Nuevo paciente</button>
-            <span class="inline-note">Ordena directamente por columnas en el listado.</span>
           </div>
-          <div class="table-wrap scroll-region scroll-region-xl"><table><thead><tr><th>${sortHeader('patients', 'name', 'Paciente')}</th><th>${sortHeader('patients', 'age', 'Edad')}</th><th>Estado</th><th>Establecimiento</th><th>${sortHeader('patients', 'id', 'Accion / ID')}</th></tr></thead><tbody>${patients.map((item) => `<tr class="${item.id === state.selectedPatientId ? 'row-active' : ''}"><td><strong>${item.display_name}</strong><small>${item.id} · ${item.rut || item.identifier_kind}</small></td><td>${patientAgeLabel(item)}</td><td>${badge(item.status)}</td><td>${item.establishment_name}</td><td><button class="slot-action secondary" type="button" data-open-drawer="patient" data-id="${item.id}">Abrir ficha</button></td></tr>`).join('')}</tbody></table></div>
+          <div class="toolbar-inline">
+            <label class="filter-field">Establecimiento
+              <select id="patient-establishment-filter">
+                <option value="">Todos</option>
+                ${establishments.map((item) => `<option value="${item.id}" ${selectedOption(state.patientEstablishmentFilter, item.id)}>${item.name}</option>`).join('')}
+              </select>
+            </label>
+          </div>
+          <div class="table-wrap scroll-region scroll-region-xl"><table><thead><tr><th>${sortHeader('patients', 'name', 'Paciente')}</th><th>${sortHeader('patients', 'age', 'Edad')}</th><th>${sortHeader('patients', 'status', 'Estado')}</th><th>${sortHeader('patients', 'establishment', 'Establecimiento')}</th><th>${sortHeader('patients', 'id', 'Accion / ID')}</th></tr></thead><tbody>${patients.map((item) => `<tr class="${item.id === state.selectedPatientId ? 'row-active' : ''}"><td><strong>${item.display_name}</strong><small>${item.id} · ${item.rut || item.identifier_kind}</small></td><td>${patientAgeLabel(item)}</td><td>${badge(item.status)}</td><td>${item.establishment_name}</td><td><button class="slot-action secondary" type="button" data-open-drawer="patient" data-id="${item.id}">Abrir ficha</button></td></tr>`).join('')}</tbody></table></div>
       </section>
     `;
   },
@@ -2545,17 +3053,14 @@ const views = {
         ['Alta prioridad', entries.filter((item) => item.priority === 'alta').length, 'Visibilidad operativa']
       ])}
       <section class="card">
-          <div class="section-head"><h2>Esperas visibles</h2>${badge(entries.length)}</div>
-          <p class="muted">La bandeja principal queda arriba; el registro de necesidad se mueve abajo para priorizar lectura y resolucion.</p>
-          <div class="table-wrap scroll-region scroll-region-xl"><table><thead><tr><th>ID</th><th>${sortHeader('waitlist', 'patient', 'Paciente')}</th><th>${sortHeader('waitlist', 'service', 'Prestacion')}</th><th>${sortHeader('waitlist', 'priority', 'Prioridad')}</th><th>${sortHeader('waitlist', 'status', 'Estado')}</th><th>Accion</th></tr></thead><tbody>${entries.map((item) => `<tr class="${item.id === state.selectedWaitlistId ? 'row-active' : ''}"><td>${item.id}</td><td>${item.patient_name}</td><td>${item.service}</td><td>${badge(item.priority)}</td><td>${badge(item.status)}</td><td><button class="slot-action secondary" type="button" data-open-drawer="waitlist" data-id="${item.id}">Gestionar</button></td></tr>`).join('')}</tbody></table></div>
+        <div class="section-head section-head-wrap"><h2>Operacion de espera</h2>${badge(writable ? 'waitlist.write' : 'waitlist.read')}</div>
+        <div class="hero-actions hero-actions-compact">
+          <button class="slot-action" type="button" data-open-modal="waitlist-create" ${writable ? '' : 'disabled'}>Registrar espera</button>
+        </div>
       </section>
       <section class="card">
-        <div class="section-head"><h2>Operacion de espera</h2>${badge(writable ? 'waitlist.write' : 'waitlist.read')}</div>
-        <p class="muted">${writable ? 'Las necesidades nuevas pasan a modal; la resolucion y la oferta quedan en drawer.' : 'Tu rol puede revisar espera, pero no crear ni resolver ofertas.'}</p>
-        <div class="hero-actions">
-          <button class="slot-action" type="button" data-open-modal="waitlist-create" ${writable ? '' : 'disabled'}>Registrar necesidad</button>
-          <span class="inline-note">Puedes ordenar por columnas en el listado principal.</span>
-        </div>
+        <div class="section-head"><h2>Esperas visibles</h2>${badge(entries.length)}</div>
+        <div class="table-wrap scroll-region scroll-region-xl"><table><thead><tr><th>ID</th><th>${sortHeader('waitlist', 'patient', 'Paciente')}</th><th>${sortHeader('waitlist', 'service', 'Prestacion')}</th><th>${sortHeader('waitlist', 'priority', 'Prioridad')}</th><th>${sortHeader('waitlist', 'status', 'Estado')}</th><th>Accion</th></tr></thead><tbody>${entries.map((item) => `<tr class="${item.id === state.selectedWaitlistId ? 'row-active' : ''}"><td>${item.id}</td><td>${item.patient_name}</td><td>${item.service}</td><td>${badge(item.priority)}</td><td>${badge(item.status)}</td><td><button class="slot-action secondary" type="button" data-open-drawer="waitlist" data-id="${item.id}">Gestionar</button></td></tr>`).join('')}</tbody></table></div>
       </section>
     `;
   },
@@ -2569,10 +3074,10 @@ const views = {
         ['Plantillas activas', templates.filter((item) => item.status === 'active').length, 'Versionadas'],
         ['Mensajes emitidos', currentContactMessages().length, 'Historial disponible']
       ])}
-      <div class="grid two surface-grid">
-        <section class="card">
-          <div class="section-head"><h2>Enviar contacto</h2>${badge(can('contact.write') ? 'contact.write' : 'contact.read')}</div>
-          <p class="muted">${can('contact.write') ? 'La bandeja exige finalidad sanitaria, consentimiento, plantilla activa y canal permitido.' : 'Tu rol puede revisar casos, pero no enviar mensajes.'}</p>
+      <section class="card">
+        <div class="section-head"><h2>Enviar contacto</h2>${badge(can('contact.write') ? 'contact.write' : 'contact.read')}</div>
+        <details class="details-card" ${can('contact.write') ? '' : 'open'}>
+          <summary>Registrar envio</summary>
           <form id="send-contact-message-form" class="form-grid">
             <label>Paciente
               <select name="patient_id" ${can('contact.write') ? '' : 'disabled'}>
@@ -2590,38 +3095,29 @@ const views = {
                 ${['telefono', 'sms', 'correo', 'whatsapp', 'portal'].map((item) => `<option value="${item}">${item}</option>`).join('')}
               </select>
             </label>
+            <label>Etiqueta
+              <select name="purpose" ${can('contact.write') ? '' : 'disabled'}>
+                ${['recordatorio_cita', 'seguimiento_preventivo', 'campana', 'resultado_examen', 'contacto_social'].map((item) => `<option value="${item}">${item}</option>`).join('')}
+              </select>
+            </label>
             <label class="span-2">Detalle<textarea name="detail" ${can('contact.write') ? '' : 'disabled'} placeholder="Mensaje aprobado para envio"></textarea></label>
-            <label class="span-2 inline-check"><input type="checkbox" name="contains_sensitive_detail" ${can('contact.write') ? '' : 'disabled'}>Contiene detalle sensible</label>
+            <label class="span-2 inline-check aligned-check"><input type="checkbox" name="contains_sensitive_detail" ${can('contact.write') ? '' : 'disabled'}><span>Contiene detalle sensible</span></label>
             <div class="form-actions span-2">
-              <button type="submit" ${can('contact.write') ? '' : 'disabled'}>Registrar envio</button>
-              <span class="inline-note">SMS, correo y WhatsApp bloquean detalle sensible por codigo.</span>
+              <button class="primary-accent" type="submit" ${can('contact.write') ? '' : 'disabled'}>Registrar envio</button>
             </div>
           </form>
-        </section>
-        <section class="card">
-          <div class="section-head"><h2>Plantillas versionadas</h2>${badge(templates.length)}</div>
-          <div class="stack compact">${templates.map((item) => `
-            <article class="stack-card">
-              <div>
-                <strong>${item.code} v${item.version}</strong>
-                <span>${item.name} · ${item.channel} · ${item.purpose}</span>
-                <small>${item.language} · ${item.contains_sensitive_detail ? 'detalle sensible' : 'sin detalle sensible'}</small>
-              </div>
-              <div class="slot-actions">${badge(item.status)}</div>
-            </article>
-          `).join('')}</div>
-          <div class="hero-actions">
-            <button class="slot-action secondary" type="button" data-open-modal="contact-template-create" ${rbac().action_access?.template_manage ? '' : 'disabled'}>Crear plantilla</button>
+        </details>
+      </section>
+      <section class="card">
+          <div class="section-head section-head-wrap"><h2>Plantillas</h2>${badge(templates.length)}</div>
+          <div class="hero-actions hero-actions-compact">
+            <button class="slot-action secondary" type="button" data-open-modal="contact-template-browser">Ver plantillas</button>
           </div>
-        </section>
-      </div>
-      <div class="grid two surface-grid">
-        <section class="card span-full">
+      </section>
+      <section class="card">
           <div class="section-head"><h2>Casos de contactabilidad</h2>${badge(cases.length)}</div>
-          <p class="muted">La vista se puede buscar y ordenar por columnas.</p>
           <div class="table-wrap scroll-region scroll-region-xl"><table><thead><tr><th>${sortHeader('contact', 'patient', 'Paciente')}</th><th>Finalidad</th><th>${sortHeader('contact', 'attempts', 'Intentos')}</th><th>${sortHeader('contact', 'status', 'Estado')}</th><th>${sortHeader('contact', 'recent', 'Actualizado')}</th><th>Accion</th></tr></thead><tbody>${cases.map((item) => `<tr class="${item.id === state.selectedContactCaseId ? 'row-active' : ''}"><td><strong>${item.patient_name}</strong><small>${item.id} · ${item.establishment_name}</small></td><td>${item.purpose}</td><td>${item.attempt_count} / ${item.channel_count} canales</td><td>${badge(item.status)}</td><td>${item.updated_at || item.created_at || '-'}</td><td><button class="slot-action secondary" type="button" data-open-drawer="contact-case" data-id="${item.id}">Abrir</button></td></tr>`).join('')}</tbody></table></div>
-        </section>
-      </div>
+      </section>
     `;
   },
   campaigns() {
@@ -2633,22 +3129,20 @@ const views = {
     const surveys = state.bootstrap.surveys || [];
     const patients = currentPatients();
     return `
-      <section class="card notice">
-        <h2>Campanas y encuestas</h2>
-        <p>${canManage ? 'Puedes crear, aprobar, programar y revisar metricas agregadas con finalidad sanitaria.' : 'Tu rol puede revisar campanas visibles, pero no mutarlas.'}</p>
-      </section>
       <section class="card">
         <div class="section-head"><h2>Campanas visibles</h2>${badge('campaigns.read')}</div>
         <table><thead><tr><th>ID</th><th>Nombre</th><th>Finalidad</th><th>Establecimiento</th><th>Canal</th><th>Estado</th><th>Envios</th><th>Respuestas</th></tr></thead><tbody>${campaigns.map((item) => `<tr><td>${item.id}</td><td>${item.name}</td><td>${item.purpose}</td><td>${item.establishment_name}</td><td>${item.channel}</td><td>${badge(item.status)}</td><td>${item.metrics?.delivered || item.sent || 0}</td><td>${item.metrics?.responded || 0}</td></tr>`).join('')}</tbody></table>
       </section>
       <section class="card">
-        <div class="section-head"><h2>Encuestas activas</h2>${badge(surveys.length)}</div>
-        <table><thead><tr><th>ID</th><th>Nombre</th><th>Version</th><th>Finalidad</th><th>Estado</th><th>Promedio</th></tr></thead><tbody>${surveys.map((item) => `<tr><td>${item.id}</td><td>${item.name}</td><td>${item.version}</td><td>${item.purpose}</td><td>${badge(item.status)}</td><td>${item.average_score ?? '-'}</td></tr>`).join('')}</tbody></table>
-      </section>
-      <div class="grid two">
-        <section class="card">
-          <div class="section-head"><h2>Crear campana</h2>${badge(canManage ? 'campaigns.manage' : 'solo_lectura')}</div>
-          <form id="create-campaign-form" class="form-grid">
+        <div class="section-head section-head-wrap"><h2>Acciones de campana</h2>${badge(canManage ? 'campaigns.manage' : 'solo_lectura')}</div>
+        <div class="subnav-tabs" role="tablist" aria-label="Subsecciones campanas">
+          <button class="subnav-tab ${state.campaignPanel === 'create' ? 'active' : ''}" type="button" data-campaign-panel="create">Crear</button>
+          <button class="subnav-tab ${state.campaignPanel === 'approve' ? 'active' : ''}" type="button" data-campaign-panel="approve">Aprobar</button>
+          <button class="subnav-tab ${state.campaignPanel === 'schedule' ? 'active' : ''}" type="button" data-campaign-panel="schedule">Programar</button>
+          <button class="subnav-tab ${state.campaignPanel === 'export' ? 'active' : ''}" type="button" data-campaign-panel="export">Exportar agregado</button>
+        </div>
+        ${state.campaignPanel === 'create' ? `
+          <form id="create-campaign-form" class="form-grid campaign-panel-form">
             <label>Nombre<input name="name" placeholder="Campana control invierno" ${canManage ? '' : 'disabled'}></label>
             <label>Finalidad<input name="purpose" placeholder="promocion_preventiva" ${canManage ? '' : 'disabled'}></label>
             <label>Canal
@@ -2664,7 +3158,7 @@ const views = {
             <label class="span-2">Segmento manual<input name="audience" placeholder="Pacientes cronicos con consentimiento vigente" ${canManage ? '' : 'disabled'}></label>
             <label>Plantilla
               <select name="template_id" ${canManage ? '' : 'disabled'}>
-                ${templates.map((item) => `<option value="${item.id}">${item.code} · ${item.channel} · ${item.purpose}</option>`).join('')}
+                ${templates.map((item) => `<option value="${item.id}">${item.code} · ${item.channel}</option>`).join('')}
               </select>
             </label>
             <label>Encuesta asociada
@@ -2675,10 +3169,9 @@ const views = {
             </label>
             <div class="form-actions span-2"><button type="submit" ${canManage ? '' : 'disabled'}>Crear campana</button></div>
           </form>
-        </section>
-        <section class="card">
-          <div class="section-head"><h2>Operar campana</h2>${badge(canManage ? 'gestion_habilitada' : 'solo_lectura')}</div>
-          <form id="approve-campaign-form" class="form-grid">
+        ` : ''}
+        ${state.campaignPanel === 'approve' ? `
+          <form id="approve-campaign-form" class="form-grid campaign-panel-form">
             <label>Campana
               <select name="campaign_id" ${canManage ? '' : 'disabled'}>
                 ${campaigns.map((item) => `<option value="${item.id}">${item.id} · ${item.name}</option>`).join('')}
@@ -2687,7 +3180,9 @@ const views = {
             <label class="span-2">Nota aprobacion<input name="approval_note" placeholder="Aprobacion sanitaria" ${canManage ? '' : 'disabled'}></label>
             <div class="form-actions span-2"><button type="submit" ${canManage ? '' : 'disabled'}>Aprobar</button></div>
           </form>
-          <form id="schedule-campaign-form" class="form-grid">
+        ` : ''}
+        ${state.campaignPanel === 'schedule' ? `
+          <form id="schedule-campaign-form" class="form-grid campaign-panel-form">
             <label>Campana
               <select name="campaign_id" ${canManage ? '' : 'disabled'}>
                 ${campaigns.map((item) => `<option value="${item.id}">${item.id} · ${item.name}</option>`).join('')}
@@ -2697,7 +3192,9 @@ const views = {
             <label class="span-2">Nota ejecucion<input name="execution_note" placeholder="Envio programado" ${canManage ? '' : 'disabled'}></label>
             <div class="form-actions span-2"><button type="submit" ${canManage ? '' : 'disabled'}>Programar</button></div>
           </form>
-          <form id="export-campaign-form" class="form-grid">
+        ` : ''}
+        ${state.campaignPanel === 'export' ? `
+          <form id="export-campaign-form" class="form-grid campaign-panel-form">
             <label>Campana
               <select name="campaign_id" ${canExport ? '' : 'disabled'}>
                 ${campaigns.map((item) => `<option value="${item.id}">${item.id} · ${item.name}</option>`).join('')}
@@ -2706,8 +3203,8 @@ const views = {
             <label>Finalidad exportacion<input name="purpose" placeholder="seguimiento_operativo" ${canExport ? '' : 'disabled'}></label>
             <div class="form-actions span-2"><button type="submit" ${canExport ? '' : 'disabled'}>Exportar agregado</button></div>
           </form>
-        </section>
-      </div>
+        ` : ''}
+      </section>
       <section class="card">
         <div class="section-head"><h2>Registrar respuesta de encuesta</h2>${badge(canManage ? 'encuesta' : 'solo_lectura')}</div>
         <form id="survey-response-form" class="form-grid">
@@ -2745,38 +3242,9 @@ const views = {
   sidra() {
     const events = filteredSidraEvents();
     const canManage = rbac().action_access?.sidra_manage;
-    const establishments = state.bootstrap.establishments || [];
     return `
-      <section class="card notice">
-        <h2>SIDRA</h2>
-        <p>La cola de integracion permite revisar estado, seguimiento y resolucion de eventos.</p>
-      </section>
       <section class="card">
-        <div class="section-head"><h2>Cola SIDRA</h2>${badge(events.length)}</div>
-        <p class="muted">${canManage ? 'La tabla resume el estado y cada evento se gestiona desde un panel lateral unico.' : 'Tu rol puede revisar el estado de la cola, pero no mutarla.'}</p>
-        ${canManage ? `
-          <form id="create-sidra-event-form" class="form-grid">
-            <label>Tipo<input name="type" value="appointment.manual_sync"></label>
-            <label>Entidad
-              <select name="entity">
-                ${['appointment', 'waitlist', 'contact_case', 'patient', 'manual_batch'].map((item) => `<option value="${item}">${item}</option>`).join('')}
-              </select>
-            </label>
-            <label>Entity ID<input name="entity_id" placeholder="C-0001 o lote-001"></label>
-            <label>Establecimiento
-              <select name="establishment_id">
-                ${establishments.map((item) => `<option value="${item.id}">${item.name}</option>`).join('')}
-              </select>
-            </label>
-            <label>Resultado por defecto
-              <select name="simulation_default_result">
-                ${['acknowledged', 'failed', 'rejected', 'discrepancy'].map((item) => `<option value="${item}">${item}</option>`).join('')}
-              </select>
-            </label>
-            <label class="span-2">Nota<input name="note" placeholder="Evento para seguimiento operativo"></label>
-            <div class="form-actions span-2"><button type="submit">Encolar evento</button></div>
-          </form>
-        ` : ''}
+        <div class="section-head section-head-wrap"><h2>Cola SIDRA</h2>${canManage ? `<button class="slot-action" type="button" data-open-modal="sidra-create">Encolar evento</button>` : badge(events.length)}</div>
         <div class="table-wrap scroll-region scroll-region-xl"><table><thead><tr><th>ID</th><th>${sortHeader('sidra', 'event', 'Evento')}</th><th>Entidad</th><th>Establecimiento</th><th>${sortHeader('sidra', 'status', 'Estado')}</th><th>${sortHeader('sidra', 'retries', 'Reintentos')}</th><th>Accion</th></tr></thead><tbody>${events.map((item) => `
           <tr>
             <td>${item.id}</td>
@@ -2810,12 +3278,21 @@ const views = {
     const services = state.bootstrap.services || [];
     const canExport = rbac().action_access?.reports_export;
     return `
-      <section class="card notice">
-        <h2>Reportes</h2>
-        <p>Consulta, genera y exporta reportes operativos para seguimiento de la gestion.</p>
-      </section>
       <section class="card">
         <div class="section-head"><h2>Reportes mensuales persistidos</h2>${badge(reports.length)}</div>
+        <div class="report-grid">
+          ${reports.map((item) => `
+            <article class="report-card">
+              <div class="section-head"><h3>${item.period}</h3>${badge(item.privacy?.identifiable_export === false ? 'aggregate_only' : 'blocked')}</div>
+              <p>${[item.filters?.establishment_id || 'todos', item.filters?.service_id || 'todas', item.filters?.channel || 'todos'].join(' / ')}</p>
+              <dl>
+                <div><dt>Citas</dt><dd>${item.totals?.appointments_created || 0}</dd></div>
+                <div><dt>Contactos</dt><dd>${item.totals?.contact_attempts || 0}</dd></div>
+                <div><dt>SIDRA pendiente</dt><dd>${item.totals?.sidra_pending || 0}</dd></div>
+              </dl>
+            </article>
+          `).join('')}
+        </div>
         <div class="table-wrap scroll-region scroll-region-lg"><table><thead><tr><th>ID</th><th>Periodo</th><th>Filtros</th><th>Citas</th><th>Contactos</th><th>SIDRA pendiente</th><th>Privacidad</th></tr></thead><tbody>${reports.map((item) => `<tr><td>${item.id}</td><td>${item.period}</td><td>${[item.filters?.establishment_id || 'todos', item.filters?.service_id || 'todas', item.filters?.channel || 'todos'].join(' / ')}</td><td>${item.totals?.appointments_created || 0}</td><td>${item.totals?.contact_attempts || 0}</td><td>${item.totals?.sidra_pending || 0}</td><td>${badge(item.privacy?.identifiable_export === false ? 'aggregate_only' : 'blocked')}</td></tr>`).join('')}</tbody></table></div>
       </section>
       <section class="card">
@@ -2860,6 +3337,24 @@ const views = {
             <div class="form-actions span-2"><button type="submit" ${canExport ? '' : 'disabled'}>Exportar agregado</button></div>
           </form>
       </section>
+      ${state.reportExportPreview ? `
+        <section class="card">
+          <div class="section-head section-head-wrap"><h2>Agregado exportado</h2><a class="slot-action secondary compact link-action" href="${reportExportDownloadHref()}" download="quilicura-agregado.json">Descargar agregado</a></div>
+          <div class="report-export">
+            <div class="report-grid single">
+              <article class="report-card">
+                <div class="section-head"><h3>${state.reportExportPreview.report?.period || state.reportExportPreview.report?.id || 'Exportacion'}</h3>${badge('agregado')}</div>
+                <dl>
+                  <div><dt>Citas</dt><dd>${state.reportExportPreview.report?.totals?.appointments_created || 0}</dd></div>
+                  <div><dt>Contactos</dt><dd>${state.reportExportPreview.report?.totals?.contact_attempts || state.reportExportPreview.metrics?.delivered || 0}</dd></div>
+                  <div><dt>SIDRA pendiente</dt><dd>${state.reportExportPreview.report?.totals?.sidra_pending || 0}</dd></div>
+                </dl>
+              </article>
+            </div>
+            <pre class="json-preview">${JSON.stringify(state.reportExportPreview, null, 2)}</pre>
+          </div>
+        </section>
+      ` : ''}
     `;
   },
   audit() {
@@ -2870,7 +3365,7 @@ const views = {
       actor: (left, right) => compareText(left.actor, right.actor),
       action: (left, right) => compareText(left.action, right.action),
       result: (left, right) => compareText(left.result, right.result)
-    });
+    }, state.sortDir.audit);
     return `
       <section class="card">
         <div class="section-head"><h2>Trazabilidad</h2>${badge('audit.view')}</div>
@@ -2889,9 +3384,13 @@ function loginCard() {
           <span class="mark large">QS</span>
           <div>
             <p class="eyebrow">Quilicura Salud</p>
-            <h1>Acceso</h1>
-            <p class="muted">Ingresa con tus credenciales para acceder a agenda, pacientes, lista de espera y contactabilidad.</p>
+            <h1>Acceso operativo</h1>
+            <p class="muted">Ingresa con tus credenciales para acceder a agenda, pacientes, lista de espera, contactabilidad y seguimiento institucional desde una experiencia más clara y usable.</p>
           </div>
+        </div>
+        <div class="login-intro">
+          <span class="hero-chip">Plantilla institucional vigente</span>
+          <p>Esta experiencia local mantiene RBAC, continuidad operativa y control de evidencias sobre un frontend renovado con mejor legibilidad, respuesta y jerarquia visual.</p>
         </div>
         <form id="login-form" class="login-form">
           <label>
@@ -2910,6 +3409,11 @@ function loginCard() {
         <article class="card">
           <div class="section-head"><h2>Ingreso seguro</h2>${badge('local_access')}</div>
           <p class="muted compact-note">El acceso requiere usuario y clave vigentes. Si no puedes ingresar, solicita apoyo al equipo administrador.</p>
+          <div class="info-pills">
+            <span class="hero-meta-pill">Sin deploy</span>
+            <span class="hero-meta-pill">Sin datos productivos</span>
+            <span class="hero-meta-pill">SIDRA simulated</span>
+          </div>
         </article>
         <article class="card">
           <div class="section-head"><h2>Seguridad</h2>${badge('auth_local')}</div>
