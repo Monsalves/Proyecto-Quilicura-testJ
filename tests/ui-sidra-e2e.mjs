@@ -82,6 +82,8 @@ try {
   assert(shell.ok, 'frontend shell must respond for sidra ui test');
   const script = await fetch(`${appBase}/src/frontend/app.js`);
   assert(script.ok, 'frontend app script must be served for sidra ui flow');
+  const scriptSource = await script.text();
+  assert(scriptSource.includes('<select name="entity_id">'), 'sidra ui must expose entity id selector');
 
   const token = await loginAs('admin.comunal', 'Quili.Admin!2026');
 
