@@ -76,6 +76,8 @@ try {
   assert(first.db.sidra.length >= 20, 'seed must contain at least 20 sidra events');
   assert(Array.isArray(first.db.sessions) && first.db.sessions.length === 0, 'seed reset db must start without sessions');
   assert(first.inspect.table_count >= 30, 'sqlite seed reset must create real tables');
+  assert(new Set(first.db.patients.map((item) => item.rut).filter(Boolean)).size >= 90, 'seed must contain diverse patient RUT values');
+  assert(new Set(first.db.patients.map((item) => item.legal_name).filter(Boolean)).size >= 90, 'seed must contain diverse patient names');
 
   console.log(JSON.stringify({
     status: 'pass',
