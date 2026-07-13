@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { gunzipSync } from 'node:zlib';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -19,8 +20,10 @@ function overrideUrl(envName, fallbackRelative) {
 }
 
 const SEED_ARCHIVE_URL = new URL('../../data/seed-v0031.json.gz.b64', import.meta.url);
+const BASE_SEED_URL = new URL('../../data/seed-r11-base.json', import.meta.url);
 const DATABASE_URL = overrideUrl('QUILICURA_DB_PATH', '../../data/quilicura.sqlite');
 const LEGACY_DATABASE_URL = new URL('../../data/local-db.json', import.meta.url);
+const WORKSPACE_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
 function seedUrlForRuntime(runtime) {
   return new URL(`../../${runtime?.storage?.seed || 'data/seed-v0031.json'}`, import.meta.url);
@@ -82,6 +85,17 @@ function looksLikeOperationalSeed(db) {
   );
 }
 
+function matchesRuntimeVersion(db, runtime) {
+  return (
+    String(db?.version || '') === String(runtime?.version || '') ||
+    String(db?.phase || '') === String(runtime?.phase || '')
+  );
+}
+
+function seedMatchesRuntime(seed, runtime) {
+  return looksLikeOperationalSeed(seed) && matchesRuntimeVersion(seed, runtime);
+}
+
 function normalizeSeedForRuntime(seed, runtime) {
   return {
     ...seed,
@@ -100,16 +114,59 @@ function normalizeSeedForRuntime(seed, runtime) {
 async function loadOperationalSeed(runtime) {
   const runtimeSeedUrl = seedUrlForRuntime(runtime);
   const seedFromFile = await readJsonIfExists(runtimeSeedUrl);
-  if (seedFromFile) {
+  if (seedMatchesRuntime(seedFromFile, runtime)) {
     return {
       seed: seedFromFile,
       runtimeSeedUrl
     };
   }
+  if (await fileExists(fileURLToPath(BASE_SEED_URL))) {
+    await regenerateOperationalSeed(runtimeSeedUrl);
+    const regeneratedSeed = await readJsonIfExists(runtimeSeedUrl);
+    if (regeneratedSeed) {
+      return {
+        seed: regeneratedSeed,
+        runtimeSeedUrl
+      };
+    }
+  }
   return {
     seed: await inflateSeedArchive(),
     runtimeSeedUrl
   };
+}
+
+async function regenerateOperationalSeed(runtimeSeedUrl) {
+  await new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(
+      process.execPath,
+      [
+        'scripts/generate-local-seed.mjs',
+        '--input',
+        'data/seed-r11-base.json',
+        '--seed-output',
+        fileURLToPath(runtimeSeedUrl),
+        '--db-output',
+        fileURLToPath(DATABASE_URL)
+      ],
+      {
+        cwd: WORKSPACE_ROOT,
+        stdio: ['ignore', 'ignore', 'pipe']
+      }
+    );
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('exit', (code) => {
+      if (code === 0) {
+        resolvePromise();
+        return;
+      }
+      rejectPromise(new Error(stderr.trim() || `seed regeneration failed with code ${code}`));
+    });
+    child.on('error', rejectPromise);
+  });
 }
 
 export async function ensureOperationalSeed(runtime) {
@@ -118,7 +175,7 @@ export async function ensureOperationalSeed(runtime) {
   }
 
   const currentDb = await readSqliteIfExists(DATABASE_URL);
-  if (looksLikeOperationalSeed(currentDb)) {
+  if (looksLikeOperationalSeed(currentDb) && matchesRuntimeVersion(currentDb, runtime)) {
     return;
   }
 
@@ -129,7 +186,7 @@ export async function ensureOperationalSeed(runtime) {
 
   await ensureParent(runtimeSeedUrl);
   await ensureParent(DATABASE_URL);
-  await writeFile(runtimeSeedUrl, `${JSON.stringify(seed, null, 2)}\n`, 'utf8');
+  await writeFile(runtimeSeedUrl, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
   await createSqliteDatabase(fileURLToPath(DATABASE_URL), normalized, {
     source: looksLikeOperationalSeed(legacyDb) ? fileURLToPath(LEGACY_DATABASE_URL) : fileURLToPath(runtimeSeedUrl)
   });
