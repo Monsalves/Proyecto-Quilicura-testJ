@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 export const SQLITE_STORAGE_RELATIVE_PATH = '../../data/quilicura.sqlite';
-export const SQLITE_SCHEMA_VERSION = 'v0039';
+export const SQLITE_SCHEMA_VERSION = 'v0042';
 export const SQLITE_META_TABLE = 'wf_meta';
 
 export const ROOT_META_FIELDS = [
