@@ -62,6 +62,8 @@ try {
   const script = await fetch(`${appBase}/src/frontend/app.js`);
   assert(script.ok, 'frontend app script must be served');
   assert(script.headers.get('content-type')?.includes('text/javascript'), 'frontend app script must be javascript');
+  const scriptSource = await script.text();
+  assert(!scriptSource.includes('sidebar-toggle'), 'frontend shell must not expose sidebar collapse toggle');
 
   const invalidLogin = await fetch(`${apiBase}/api/auth/login`, {
     method: 'POST',
