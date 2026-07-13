@@ -82,6 +82,11 @@ try {
   assert(shell.ok, 'frontend shell must respond for campaigns ui test');
   const script = await fetch(`${appBase}/src/frontend/app.js`);
   assert(script.ok, 'frontend app script must be served for campaigns ui flow');
+  const scriptSource = await script.text();
+  assert(scriptSource.includes('data-campaign-panel="create"'), 'campaigns ui must expose create subsection');
+  assert(scriptSource.includes('data-campaign-panel="approve"'), 'campaigns ui must expose approval subsection');
+  assert(scriptSource.includes('data-campaign-panel="schedule"'), 'campaigns ui must expose schedule subsection');
+  assert(scriptSource.includes('data-campaign-panel="export"'), 'campaigns ui must expose aggregate export subsection');
 
   const token = await loginAs('admin.comunal', 'Quili.Admin!2026');
 
