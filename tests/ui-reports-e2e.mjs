@@ -27,6 +27,8 @@ try {
   const frontendSource = await readFile(new URL('../src/frontend/app.js', import.meta.url), 'utf8');
   assert(frontendSource.includes('Reportes mensuales persistidos'), 'frontend reports copy must exist');
   assert(frontendSource.includes('continuidad'), 'frontend continuity surface must exist');
+  assert(frontendSource.includes('Agregado exportado'), 'frontend reports must expose export preview surface');
+  assert(frontendSource.includes('Descargar agregado'), 'frontend reports must expose download action for aggregate export');
 
   const createReport = await createMonthlyReportV1(token, {
     period: '2026-07',
