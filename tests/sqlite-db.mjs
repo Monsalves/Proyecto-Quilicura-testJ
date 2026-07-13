@@ -67,7 +67,7 @@ try {
   assert(inspectReport.tables.some((table) => table.table === 'patients' && table.rows >= 100), 'patients table must be populated');
   assert(inspectReport.tables.some((table) => table.table === 'appointments' && table.rows >= 120), 'appointments table must be populated');
   assert(inspectReport.tables.some((table) => table.table === 'wf_meta'), 'meta table must exist');
-  assert(schema.manifest.schema_version === 'v0039', 'schema manifest must track v0039');
+  assert(schema.manifest.schema_version === 'v0042', 'schema manifest must track v0042');
   assert(db.patients.length >= 100, 'sqlite loader must reconstruct patients');
   assert(Array.isArray(db.sessions) && db.sessions.length === 0, 'sqlite loader must preserve empty sessions');
 
