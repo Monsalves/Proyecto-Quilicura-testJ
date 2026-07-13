@@ -82,6 +82,10 @@ try {
   assert(shell.ok, 'frontend shell must respond for contact ui test');
   const script = await fetch(`${appBase}/src/frontend/app.js`);
   assert(script.ok, 'frontend app script must be served for contact ui flow');
+  const scriptSource = await script.text();
+  assert(scriptSource.includes('Ver plantillas'), 'contact ui must expose templates browser button');
+  assert(scriptSource.includes('<select name="label"'), 'patient contact form must use predefined label selector');
+  assert(scriptSource.includes('template-browser-preview'), 'contact ui must expose inline template preview in browser panel');
 
   const token = await loginAs('admin.comunal', 'Quili.Admin!2026');
 
