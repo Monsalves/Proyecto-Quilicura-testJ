@@ -104,6 +104,10 @@ try {
 
   const script = await fetch(`${appBase}/src/frontend/app.js`);
   assert(script.ok, 'frontend app script must be served for patient ui flow');
+  const source = await script.text();
+  assert(source.includes('patient-establishment-filter'), 'patients ui must expose establishment filter');
+  assert(source.includes("sortHeader('patients', 'status', 'Estado')"), 'patients ui must expose status sort');
+  assert(source.includes("sortHeader('patients', 'establishment', 'Establecimiento')"), 'patients ui must expose establishment sort');
 
   if (!process.exitCode) {
     console.log('ui patient http pass');
